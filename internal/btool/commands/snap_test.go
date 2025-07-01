@@ -17,9 +17,8 @@ import (
 // setupTestDir is a helper function to create a temporary directory structure for testing.
 // It returns the root path of the test directory. Using t.TempDir() ensures automatic cleanup.
 func setupTestDir(t *testing.T) string {
-		// Reset global state before each test run to ensure isolation.
+	// Reset global ignore state before each test run to ensure isolation.
 	lib.ResetIgnoreState()
-	lib.ResetObjectStoreState()
 
 	testDir := t.TempDir()
 
@@ -121,14 +120,10 @@ func TestSnapCommand(t *testing.T) {
 	}
 
 	// Read and verify the root tree from the object store.
-	// We use the lib functions here to interact with the store, just like a real command would.
-	rootTreeBuffer, err := lib.ReadObjectAsBuffer(testDir, snapData.RootTreeHash)
-	if err != nil {
-		t.Fatalf("Could not read root tree object from store: %v", err)
-	}
+	store := lib.NewObjectStore(testDir)
 	var rootTree types.Tree
-	if err := json.Unmarshal(rootTreeBuffer, &rootTree); err != nil {
-		t.Fatalf("Could not parse root tree JSON: %v", err)
+	if err := store.ReadObjectAsJSON(snapData.RootTreeHash, &rootTree); err != nil {
+		t.Fatalf("Could not read root tree object from store: %v", err)
 	}
 
 	// The root tree should contain 2 files and 1 directory. 'app.log' and 'ignored_dir' must NOT be present.
@@ -155,13 +150,9 @@ func TestSnapCommand(t *testing.T) {
 	}
 
 	// Read and verify the sub-tree for the 'subdir' directory.
-	subTreeBuffer, err := lib.ReadObjectAsBuffer(testDir, subDirEntry.Hash)
-	if err != nil {
-		t.Fatalf("Could not read sub-tree object: %v", err)
-	}
 	var subTree types.Tree
-	if err := json.Unmarshal(subTreeBuffer, &subTree); err != nil {
-		t.Fatalf("Could not parse sub-tree JSON: %v", err)
+	if err := store.ReadObjectAsJSON(subDirEntry.Hash, &subTree); err != nil {
+		t.Fatalf("Could not read sub-tree object: %v", err)
 	}
 	if len(subTree.Entries) != 1 || subTree.Entries[0].Name != "fileC.txt" {
 		t.Fatalf("Sub-tree has incorrect entries, expected only 'fileC.txt'")
@@ -182,7 +173,6 @@ func TestSnapCommand(t *testing.T) {
 func TestSnapCommand_EmptyDir(t *testing.T) {
 	// Arrange: Create an empty directory.
 	lib.ResetIgnoreState()
-	lib.ResetObjectStoreState()
 	testDir := t.TempDir()
 
 	// Act: Take a snapshot of the empty directory.
@@ -203,8 +193,9 @@ func TestSnapCommand_EmptyDir(t *testing.T) {
 	}
 
 	// Assert: The root tree is empty.
-	rootTree, err := lib.ReadObjectAsJSON[types.Tree](testDir, snaps[0].RootTreeHash)
-	if err != nil {
+	store := lib.NewObjectStore(testDir)
+	var rootTree types.Tree
+	if err := store.ReadObjectAsJSON(snaps[0].RootTreeHash, &rootTree); err != nil {
 		t.Fatalf("Failed to read root tree of empty snap: %v", err)
 	}
 	if len(rootTree.Entries) != 0 {

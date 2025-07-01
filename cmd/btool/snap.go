@@ -6,6 +6,8 @@ import (
 )
 
 func NewSnapCommand() *cobra.Command {
+	var message string
+
 	cmd := &cobra.Command{
 		Use:   "snap [directory]",
 		Short: "Create a new snap for a directory.",
@@ -15,8 +17,11 @@ func NewSnapCommand() *cobra.Command {
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			return commands.Snap(dir, "")
+			return commands.Snap(dir, message)
 		},
 	}
+
+	cmd.Flags().StringVarP(&message, "message", "m", "", "A message to associate with the snap")
+
 	return cmd
 }

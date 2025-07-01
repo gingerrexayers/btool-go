@@ -15,12 +15,13 @@ import (
 
 // SnapDetail enhances the Snap struct with the calculated ID and hash (filename).
 type SnapDetail struct {
-	ID           int
+	ID           int64 // Use int64 to match the type in types.Snap
 	Hash         string
 	Timestamp    time.Time
 	Message      string
 	RootTreeHash string
 	SourceSize   int64
+	SnapSize     int64
 }
 
 // GetSortedSnaps reads all snaps for a given repository, sorts them by date
@@ -61,25 +62,23 @@ func GetSortedSnaps(baseDir string) ([]SnapDetail, error) {
 			}
 
 			snapDetails = append(snapDetails, SnapDetail{
+				ID:           snapData.ID, // Use the persistent ID from the snap file
 				Hash:         snapHash,
 				Timestamp:    ts,
 				Message:      snapData.Message,
 				RootTreeHash: snapData.RootTreeHash,
 				SourceSize:   snapData.SourceSize,
+				SnapSize:     snapData.SnapSize,
 			})
 		}
 	}
 
-	// Sort by timestamp, oldest first.
+	// Sort by ID, oldest first.
 	sort.Slice(snapDetails, func(i, j int) bool {
-		return snapDetails[i].Timestamp.Before(snapDetails[j].Timestamp)
+		return snapDetails[i].ID < snapDetails[j].ID
 	})
 
-	// Assign sequential IDs based on the sorted order.
-	for i := range snapDetails {
-		snapDetails[i].ID = i + 1
-	}
-
+	// The sorting is now only by timestamp. The ID is persistent.
 	return snapDetails, nil
 }
 
@@ -94,7 +93,7 @@ func FindSnap(baseDir, snapIdentifier string) (*SnapDetail, error) {
 	}
 
 	var snapToReturn *SnapDetail
-	snapID, err := strconv.Atoi(snapIdentifier)
+	snapID, err := strconv.ParseInt(snapIdentifier, 10, 64)
 	if err == nil { // Identifier is a numeric ID.
 		for i := range snaps {
 			if snaps[i].ID == snapID {

@@ -15,6 +15,7 @@ func main() {
 	rootCmd.AddCommand(NewListCommand())
 	rootCmd.AddCommand(NewRestoreCommand())
 	rootCmd.AddCommand(NewPruneCommand())
+	rootCmd.AddCommand(NewCompletionCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)

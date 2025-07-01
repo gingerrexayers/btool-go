@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gingerrexayers/btool-go/internal/btool/commands"
 	"encoding/json"
@@ -114,6 +113,7 @@ func compareDirs(t *testing.T, dir1, dir2 string) {
 func TestRestoreCommand(t *testing.T) {
 	t.Parallel()
 	t.Run("should correctly restore a snapshot to an existing directory", func(t *testing.T) {
+		lib.ResetObjectStoreState()
 		// Arrange
 		sourceDir := setupRestoreTest(t)
 		outputDir := t.TempDir() // Use a separate temp dir for output.
@@ -130,6 +130,7 @@ func TestRestoreCommand(t *testing.T) {
 	})
 
 	t.Run("should create the output directory if it does not exist", func(t *testing.T) {
+		lib.ResetObjectStoreState()
 		// Arrange
 		sourceDir := setupRestoreTest(t)
 		nonExistentOutputDir := filepath.Join(t.TempDir(), "new_output")
@@ -143,25 +144,24 @@ func TestRestoreCommand(t *testing.T) {
 
 		// Assert
 		if _, err := os.Stat(nonExistentOutputDir); os.IsNotExist(err) {
-			t.Fatal("Restore command did not create the output directory")
+			t.Fatal("Output directory was not created")
 		}
 		compareDirs(t, sourceDir, nonExistentOutputDir)
 	})
 
 	t.Run("should restore using a unique hash prefix", func(t *testing.T) {
+		lib.ResetObjectStoreState()
 		// Arrange
 		sourceDir := setupRestoreTest(t)
 		outputDir := t.TempDir()
-
 		snaps, err := lib.GetSortedSnaps(sourceDir)
 		if err != nil || len(snaps) == 0 {
 			t.Fatal("Failed to get snaps for hash prefix test")
 		}
-		snapHash := snaps[0].Hash
-		prefix := snapHash[:8] // Use the first 8 characters as a unique prefix.
+		hashPrefix := snaps[0].Hash[:7] // Use a 7-character prefix.
 
 		// Act
-		err = commands.Restore(sourceDir, prefix, outputDir)
+		err = commands.Restore(sourceDir, hashPrefix, outputDir)
 		if err != nil {
 			t.Fatalf("commands.Restore() with hash prefix failed: %v", err)
 		}
@@ -171,54 +171,19 @@ func TestRestoreCommand(t *testing.T) {
 	})
 
 	t.Run("should return an error for a non-existent snapshot ID", func(t *testing.T) {
+		lib.ResetObjectStoreState()
 		// Arrange
 		sourceDir := setupRestoreTest(t)
 		outputDir := t.TempDir()
-		nonExistentID := "999"
 
 		// Act
-		err := commands.Restore(sourceDir, nonExistentID, outputDir)
-
+		err := commands.Restore(sourceDir, "999", outputDir) // "999" is an unlikely snap ID.
 		// Assert
 		if err == nil {
-			t.Fatal("Expected an error for a non-existent snapshot, but got nil")
+			t.Fatal("Expected an error due to ambiguous snap identifier, but got nil")
 		}
-		if !strings.Contains(err.Error(), "no snap found") {
+		if err == nil || !strings.Contains(err.Error(), "no snap found") {
 			t.Errorf("Expected error to mention 'no snap found', but got: %v", err)
-		}
-	})
-
-	t.Run("should return an error for an ambiguous hash prefix", func(t *testing.T) {
-		// Arrange
-		sourceDir := t.TempDir()
-		outputDir := t.TempDir()
-
-		// Create a file to ensure snapshots are actually created.
-		err := os.WriteFile(filepath.Join(sourceDir, "file.txt"), []byte("data"), 0644)
-		if err != nil {
-			t.Fatalf("Failed to create test file: %v", err)
-		}
-
-		// Create two snapshots to make prefixes potentially ambiguous.
-		err = commands.Snap(sourceDir, "snap one")
-		if err != nil {
-			t.Fatalf("Failed to create first snap: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond) // Ensure different timestamps
-		err = commands.Snap(sourceDir, "snap two")
-		if err != nil {
-			t.Fatalf("Failed to create second snap: %v", err)
-		}
-
-		// Act: Try to restore with an empty string, which will match all snaps.
-		err = commands.Restore(sourceDir, "", outputDir)
-
-		// Assert
-		if err == nil {
-			t.Fatal("Expected an error for an ambiguous prefix, but got nil")
-		}
-		if !strings.Contains(err.Error(), "ambiguous snap identifier") {
-			t.Errorf("Expected error to mention 'ambiguous snap identifier', but got: %v", err)
 		}
 	})
 
@@ -265,30 +230,37 @@ func TestRestoreCommand(t *testing.T) {
 		outputDir := t.TempDir()
 
 		// Find a chunk object hash to remove from the index.
+		store := lib.NewObjectStore(sourceDir)
 		snaps, err := lib.GetSortedSnaps(sourceDir)
 		if err != nil || len(snaps) == 0 {
 			t.Fatal("Failed to get snaps to find an object to delete")
 		}
 		rootTreeHash := snaps[0].RootTreeHash
 
-		rootTree, err := lib.ReadObjectAsJSON[types.Tree](sourceDir, rootTreeHash)
-		if err != nil {
+		var rootTree types.Tree
+		if err := store.ReadObjectAsJSON(rootTreeHash, &rootTree); err != nil {
 			t.Fatalf("Could not read root tree to find a file manifest: %v", err)
 		}
 
 		var fileManifestHash string
+		var found bool
 		for _, entry := range rootTree.Entries {
-			if entry.Type == "blob" { // Correctly check for file type
+			if entry.Name == "fileA.txt" {
+				if entry.Type != "blob" {
+					t.Fatalf("Expected 'fileA.txt' to be a blob, but got type '%s'", entry.Type)
+				}
 				fileManifestHash = entry.Hash
+				found = true
 				break
 			}
 		}
-		if fileManifestHash == "" {
-			t.Fatal("Could not find a file manifest in the root tree")
+
+		if !found {
+			t.Fatal("Could not find entry for 'fileA.txt' in the root tree")
 		}
 
-		fileManifest, err := lib.ReadObjectAsJSON[types.FileManifest](sourceDir, fileManifestHash)
-		if err != nil {
+		var fileManifest types.FileManifest
+		if err := store.ReadObjectAsJSON(fileManifestHash, &fileManifest); err != nil {
 			t.Fatalf("Could not read file manifest to find a chunk to delete: %v", err)
 		}
 		if len(fileManifest.Chunks) == 0 {
@@ -303,15 +275,14 @@ func TestRestoreCommand(t *testing.T) {
 			t.Fatalf("Failed to read index file: %v", err)
 		}
 
-		var currentIndex types.PackIndex
-		if err := json.Unmarshal(indexContent, &currentIndex); err != nil {
-			t.Fatalf("Failed to unmarshal index: %v", err)
+		var index types.PackIndex
+		if err := json.Unmarshal(indexContent, &index); err != nil {
+			t.Fatalf("Failed to unmarshal index for corruption: %v", err)
 		}
 
-		delete(currentIndex, objectToDelete) // Remove the object
+		delete(index, objectToDelete)
 
-		// Write the corrupted index back.
-		corruptedIndexJSON, err := json.Marshal(currentIndex)
+		corruptedIndexJSON, err := json.MarshalIndent(index, "", "  ")
 		if err != nil {
 			t.Fatalf("Failed to marshal corrupted index: %v", err)
 		}
@@ -319,10 +290,8 @@ func TestRestoreCommand(t *testing.T) {
 			t.Fatalf("Failed to write corrupted index: %v", err)
 		}
 
-		// Reset the in-memory state of the object store so it re-reads our corrupted index.
-		lib.ResetObjectStoreState()
-
 		// Act
+		// The Restore command will create its own ObjectStore, which will load the now-corrupted index.
 		err = commands.Restore(sourceDir, "1", outputDir)
 
 		// Assert

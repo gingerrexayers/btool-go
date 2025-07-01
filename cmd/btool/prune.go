@@ -14,6 +14,7 @@ func NewPruneCommand() *cobra.Command {
 specified snapshot and safely garbage-collecting all data that is no longer
 referenced by any of the kept snapshots.`,
 		Args: cobra.RangeArgs(1, 2),
+		ValidArgsFunction: snapshotCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The first argument is the snapshot identifier.
 			snapIdentifier := args[0]

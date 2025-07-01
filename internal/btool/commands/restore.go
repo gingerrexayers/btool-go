@@ -21,11 +21,11 @@ type fileRestoreJob struct {
 
 // restoreFileWorker is the logic executed by each goroutine in the pool.
 // It reads jobs from a channel, restores the file, and signals completion.
-func restoreFileWorker(wg *sync.WaitGroup, baseDir string, jobs <-chan fileRestoreJob, errs chan<- error) {
+func restoreFileWorker(wg *sync.WaitGroup, store *lib.ObjectStore, jobs <-chan fileRestoreJob, errs chan<- error) {
 	defer wg.Done()
 	for job := range jobs {
 		// 1. Read the file manifest object.
-		manifestBuffer, err := lib.ReadObjectAsBuffer(baseDir, job.ManifestHash)
+		manifestBuffer, err := store.ReadObjectAsBuffer(job.ManifestHash)
 		if err != nil {
 			errs <- fmt.Errorf("failed to read manifest %s for %s: %w", job.ManifestHash, job.DestinationPath, err)
 			continue
@@ -39,7 +39,7 @@ func restoreFileWorker(wg *sync.WaitGroup, baseDir string, jobs <-chan fileResto
 		// 2. Read all data chunks for the file.
 		var fileContent []byte
 		for _, chunkRef := range manifest.Chunks {
-			chunkData, err := lib.ReadObjectAsBuffer(baseDir, chunkRef.Hash)
+			chunkData, err := store.ReadObjectAsBuffer(chunkRef.Hash)
 			if err != nil {
 				errs <- fmt.Errorf("failed to read chunk %s for file %s: %w", chunkRef.Hash, job.DestinationPath, err)
 				break // Stop processing this file if a chunk is missing
@@ -56,8 +56,8 @@ func restoreFileWorker(wg *sync.WaitGroup, baseDir string, jobs <-chan fileResto
 }
 
 // restoreTree recursively reconstructs a directory from a tree object.
-func restoreTree(baseDir, treeHash, destinationPath string, jobs chan<- fileRestoreJob) error {
-	treeBuffer, err := lib.ReadObjectAsBuffer(baseDir, treeHash)
+func restoreTree(store *lib.ObjectStore, treeHash, destinationPath string, jobs chan<- fileRestoreJob) error {
+	treeBuffer, err := store.ReadObjectAsBuffer(treeHash)
 	if err != nil {
 		return err
 	}
@@ -83,7 +83,7 @@ func restoreTree(baseDir, treeHash, destinationPath string, jobs chan<- fileRest
 			}
 		} else if entry.Type == "tree" {
 			// For directories, recurse synchronously.
-			if err := restoreTree(baseDir, entry.Hash, fullRestorePath, jobs); err != nil {
+			if err := restoreTree(store, entry.Hash, fullRestorePath, jobs); err != nil {
 				return err
 			}
 			// Set permissions on the directory after its contents are processed.
@@ -107,7 +107,7 @@ func Restore(sourceDir, snapIdentifier, outputDir string) error {
 		return fmt.Errorf("could not resolve output path: %w", err)
 	}
 
-	lib.ResetObjectStoreState()
+	store := lib.NewObjectStore(absSourceDir)
 
 	// 1. Find the exact snapshot to restore.
 	snapToRestore, err := lib.FindSnap(absSourceDir, snapIdentifier)
@@ -134,12 +134,12 @@ func Restore(sourceDir, snapIdentifier, outputDir string) error {
 
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go restoreFileWorker(&wg, absSourceDir, jobs, errs)
+		go restoreFileWorker(&wg, store, jobs, errs)
 	}
 
 	// 3. Start the recursive tree traversal.
 	// This will populate the jobs channel.
-	err = restoreTree(absSourceDir, snapToRestore.RootTreeHash, absOutputDir, jobs)
+	err = restoreTree(store, snapToRestore.RootTreeHash, absOutputDir, jobs)
 	close(jobs) // Signal that no more jobs will be sent.
 	if err != nil {
 		return fmt.Errorf("failed during tree traversal: %w", err)

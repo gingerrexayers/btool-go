@@ -18,7 +18,7 @@ type PruneOptions struct {
 
 // markReachableObjects is a recursive function to find all objects referenced by a starting hash.
 // It's designed to be run in a goroutine.
-func markReachableObjects(baseDir, startHash string, liveHashes *sync.Map) error {
+func markReachableObjects(store *lib.ObjectStore, startHash string, liveHashes *sync.Map) error {
 	// Check if we've already processed this hash to avoid redundant work.
 	if _, loaded := liveHashes.LoadOrStore(startHash, true); loaded {
 		return nil
@@ -26,7 +26,7 @@ func markReachableObjects(baseDir, startHash string, liveHashes *sync.Map) error
 
 	// Read the object. We need to determine if it's a tree, a manifest, or a chunk.
 	// A simple way is to try to unmarshal it as JSON. Chunks are raw binary and will fail.
-	buffer, err := lib.ReadObjectAsBuffer(baseDir, startHash)
+	buffer, err := store.ReadObjectAsBuffer(startHash)
 	if err != nil {
 		return fmt.Errorf("failed to read object %s for marking: %w", startHash, err)
 	}
@@ -35,7 +35,7 @@ func markReachableObjects(baseDir, startHash string, liveHashes *sync.Map) error
 	var tree types.Tree
 	if err := json.Unmarshal(buffer, &tree); err == nil && len(tree.Entries) > 0 {
 		for _, entry := range tree.Entries {
-			if err := markReachableObjects(baseDir, entry.Hash, liveHashes); err != nil {
+			if err := markReachableObjects(store, entry.Hash, liveHashes); err != nil {
 				return err
 			}
 		}
@@ -45,6 +45,7 @@ func markReachableObjects(baseDir, startHash string, liveHashes *sync.Map) error
 	// Try to unmarshal as a FileManifest
 	var manifest types.FileManifest
 	if err := json.Unmarshal(buffer, &manifest); err == nil && len(manifest.Chunks) > 0 {
+		fmt.Printf("  - Scanning manifest %s...\n", startHash)
 		for _, chunk := range manifest.Chunks {
 			liveHashes.Store(chunk.Hash, true) // Chunks are leaves in the graph.
 		}
@@ -63,7 +64,7 @@ func Prune(directory string, options PruneOptions) error {
 	}
 
 	fmt.Printf("🧹 Starting prune for \"%s\", removing snaps older than %s...\n", absSourceDir, options.SnapIdentifier)
-	lib.ResetObjectStoreState()
+	store := lib.NewObjectStore(absSourceDir)
 
 	// 1. Identify Snaps to Keep and Prune
 	allSnaps, err := lib.GetSortedSnaps(absSourceDir)
@@ -97,6 +98,8 @@ func Prune(directory string, options PruneOptions) error {
 		return nil
 	}
 
+
+
 	// 2. Mark Phase
 	fmt.Println("   - Marking live objects from snapshots to keep...")
 	var liveHashes sync.Map // A thread-safe map
@@ -104,25 +107,28 @@ func Prune(directory string, options PruneOptions) error {
 	errs := make(chan error, len(snapsToKeep))
 
 	for _, snap := range snapsToKeep {
+	
 		wg.Add(1)
 		go func(s lib.SnapDetail) {
 			defer wg.Done()
-			if err := markReachableObjects(absSourceDir, s.RootTreeHash, &liveHashes); err != nil {
+			if err := markReachableObjects(store, s.RootTreeHash, &liveHashes); err != nil {
 				errs <- err
 			}
 		}(snap)
 	}
+
 	wg.Wait()
 	close(errs)
-
 	for err := range errs {
 		if err != nil {
-			return fmt.Errorf("an error occurred during the mark phase: %w", err)
+			return err
 		}
 	}
 
-	// 3. Sweep (Repack) Phase
-	fmt.Println("   - Repacking live objects into new packfiles...")
+
+
+	// 3. Sweep Phase: Rebuild the index and copy necessary packfiles.
+	fmt.Println("   - Sweeping old objects and rebuilding index...")
 	btoolDir := lib.GetBtoolDir(absSourceDir)
 	tmpPacksDir := filepath.Join(btoolDir, "packs.tmp")
 	_ = os.RemoveAll(tmpPacksDir) // Clean up from previous failed runs
@@ -130,46 +136,49 @@ func Prune(directory string, options PruneOptions) error {
 		return err
 	}
 
-	newIndex := make(types.PackIndex)
-	var newPackBuffer []byte
-	var newPackOffset int64 = 0
+	// Get the current index to find where live objects are stored.
+	currentIndex, err := store.GetIndex()
+	if err != nil {
+		return fmt.Errorf("failed to get current index for sweep: %w", err)
+	}
 
-	// Iterate over the thread-safe map
+	newIndex := make(types.PackIndex)
+	packsToKeep := make(map[string]bool)
+
 	liveHashes.Range(func(key, value interface{}) bool {
 		hash := key.(string)
-		buffer, err := lib.ReadObjectAsBuffer(absSourceDir, hash)
-		if err != nil {
-			// This is a critical error, something is wrong with the object store.
-			fmt.Fprintf(os.Stderr, "Warning: could not read object %s during repack: %v\n", hash, err)
-			return true // continue iteration
+		if entry, exists := currentIndex[hash]; exists {
+			newIndex[hash] = entry
+			packsToKeep[entry.PackHash] = true
+		} else {
+			// This case should ideally not happen in a consistent repository.
+			// It means a live hash was not found in the index.
+			fmt.Fprintf(os.Stderr, "Warning: Live object %s not found in the index during prune.\n", hash)
 		}
-		newIndex[hash] = types.PackIndexEntry{ /* PackHash is set later */ Offset: newPackOffset, Length: int64(len(buffer))}
-		newPackBuffer = append(newPackBuffer, buffer...)
-		newPackOffset += int64(len(buffer))
 		return true
 	})
 
-	if len(newPackBuffer) > 0 {
-		newPackHash := lib.GetHash(newPackBuffer)
-		// Update all new entries with the correct pack hash
-		for hash, entry := range newIndex {
-			entry.PackHash = newPackHash
-			newIndex[hash] = entry
-		}
-		if err := os.WriteFile(filepath.Join(tmpPacksDir, newPackHash), newPackBuffer, 0644); err != nil {
-			return err
+	// Copy the required packfiles to the temporary directory.
+	packsDir := lib.GetPacksDir(absSourceDir)
+	for packHash := range packsToKeep {
+		originalPath := filepath.Join(packsDir, packHash)
+		newPath := filepath.Join(tmpPacksDir, packHash)
+		if err := lib.CopyFile(originalPath, newPath); err != nil {
+			return fmt.Errorf("failed to copy packfile %s: %w", packHash, err)
 		}
 	}
 
-	// 4. Atomic Swap
+	// 4. Finalization Phase: Write the new index and atomically swap directories.
 	fmt.Println("   - Finalizing changes...")
 	tmpIndexPath := filepath.Join(btoolDir, "index.tmp.json")
-	indexJSON, _ := json.MarshalIndent(newIndex, "", "  ")
-	if err := os.WriteFile(tmpIndexPath, indexJSON, 0644); err != nil {
+	newIndexJSON, err := json.MarshalIndent(newIndex, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmpIndexPath, newIndexJSON, 0644); err != nil {
 		return err
 	}
 
-	packsDir := lib.GetPacksDir(absSourceDir)
 	indexPath := lib.GetIndexPath(absSourceDir)
 	bakPacksDir := packsDir + ".bak"
 	bakIndexPath := indexPath + ".bak"
@@ -197,9 +206,8 @@ func Prune(directory string, options PruneOptions) error {
 	// 5. Cleanup old snapshot manifests
 	snapsDir := lib.GetSnapsDir(absSourceDir)
 	for _, snap := range snapsToPrune {
-		if err := os.Remove(filepath.Join(snapsDir, snap.Hash+".json")); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not delete old snap manifest %s: %v\n", snap.Hash, err)
-		}
+		// Note: we ignore errors here, as a failure to delete a snap manifest is not critical.
+		_ = os.Remove(filepath.Join(snapsDir, snap.Hash+".json"))
 	}
 
 	fmt.Println("✅ Prune complete!")

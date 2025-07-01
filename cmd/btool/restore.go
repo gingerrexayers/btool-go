@@ -16,6 +16,7 @@ func NewRestoreCommand() *cobra.Command {
 		Long: `Restores a snapshot to a specified directory. The target directory
 will be modified to match the state of the snapshot.`,
 		Args: cobra.ExactArgs(1), // Requires exactly one argument: the snapshot identifier.
+		ValidArgsFunction: snapshotCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			snapIdentifier := args[0]
 

@@ -64,7 +64,6 @@ func List(targetDirectory string) error {
 		return fmt.Errorf("target directory does not exist: %s", absTargetPath)
 	}
 	
-	lib.ResetObjectStoreState()
 
 	// 1. Get all sorted snapshots using our new library function.
 	snaps, err := lib.GetSortedSnaps(absTargetPath)
@@ -86,16 +85,17 @@ func List(targetDirectory string) error {
 	// 3. Print the formatted table.
 	fmt.Printf("Snaps for \"%s\":\n", absTargetPath)
 	// Headers
-	fmt.Printf("%-10s %-10s %-28s %-15s %s\n", "SNAPSHOT", "HASH", "TIMESTAMP", "SOURCE SIZE", "MESSAGE")
+	fmt.Printf("%-10s %-10s %-28s %-15s %-15s %s\n", "SNAPSHOT", "HASH", "TIMESTAMP", "SOURCE SIZE", "SNAP SIZE", "MESSAGE")
 	// Separator
-	fmt.Printf("%-10s %-10s %-28s %-15s %s\n", "========", "========", "========================", "=============", "=======")
+	fmt.Printf("%-10s %-10s %-28s %-15s %-15s %s\n", "=======", "=======", "=======================", "=============", "=============", "=======")
 
 	for _, snap := range snaps {
-		fmt.Printf("%-10s %-10s %-28s %-15s %s\n",
-			strconv.Itoa(snap.ID),
+		fmt.Printf("%-10s %-10s %-28s %-15s %-15s %s\n",
+			strconv.FormatInt(snap.ID, 10),
 			snap.Hash[:7],
 			snap.Timestamp.Format("2006-01-02 15:04:05 MST"),
 			formatBytes(snap.SourceSize, 2),
+			formatBytes(snap.SnapSize, 2),
 			snap.Message,
 		)
 	}

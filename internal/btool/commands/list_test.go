@@ -42,27 +42,27 @@ func captureStdout(f func()) (string, error) {
 }
 
 func TestListCommand(t *testing.T) {
-	t.Run("should correctly list multiple snapshots", func(t *testing.T) {
+	t.Run("should correctly list snapshots and show snap size", func(t *testing.T) {
 		// Arrange: Create a test repository with two snapshots.
 		testDir := t.TempDir()
-		err := os.WriteFile(filepath.Join(testDir, "file1.txt"), []byte("version 1"), 0644)
+		file1Path := filepath.Join(testDir, "file1.txt")
+
+		err := os.WriteFile(file1Path, []byte("version 1"), 0644)
 		if err != nil {
 			t.Fatalf("Setup failed: could not write file1: %v", err)
 		}
-		// Run the real Snap command to create the first snapshot.
 		err = commands.Snap(testDir, "first commit")
 		if err != nil {
 			t.Fatalf("Setup failed: first snap command failed: %v", err)
 		}
 
-		// A small delay to ensure a different timestamp for the next snapshot.
 		time.Sleep(10 * time.Millisecond)
 
-		err = os.WriteFile(filepath.Join(testDir, "file2.txt"), []byte("version 2"), 0644)
+		// Modify the file to ensure the second snapshot has a non-zero snap size.
+		err = os.WriteFile(file1Path, []byte("version 2 is a bit longer"), 0644)
 		if err != nil {
-			t.Fatalf("Setup failed: could not write file2: %v", err)
+			t.Fatalf("Setup failed: could not modify file1: %v", err)
 		}
-		// Run the real Snap command again.
 		err = commands.Snap(testDir, "second commit")
 		if err != nil {
 			t.Fatalf("Setup failed: second snap command failed: %v", err)
@@ -82,12 +82,9 @@ func TestListCommand(t *testing.T) {
 			t.Fatalf("commands.List() returned an unexpected error: %v", listErr)
 		}
 
-		// Check the output for key components.
+		// General output checks
 		if !strings.Contains(output, "Snaps for") {
 			t.Error("Output is missing the header line")
-		}
-		if !strings.Contains(output, "SNAPSHOT") || !strings.Contains(output, "TIMESTAMP") {
-			t.Error("Output is missing the table headers")
 		}
 		if !strings.Contains(output, "1         ") {
 			t.Error("Output is missing the entry for snapshot ID 1")
@@ -95,14 +92,43 @@ func TestListCommand(t *testing.T) {
 		if !strings.Contains(output, "2         ") {
 			t.Error("Output is missing the entry for snapshot ID 2")
 		}
-		if !strings.Contains(output, "Total stored size") {
-			t.Error("Output is missing the total stored size summary line")
+
+		// Specific checks for Snap Size column
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		headerLine := ""
+		for _, line := range lines {
+			if strings.Contains(line, "SNAPSHOT") && strings.Contains(line, "HASH") {
+				headerLine = line
+				break
+			}
+		}
+		if headerLine == "" {
+			t.Fatal("Could not find header line in output")
 		}
 
-		// Check that there are the correct number of lines (header, title, separator, 2 snaps, 2 blanks, total)
-		lines := strings.Split(strings.TrimSpace(output), "\n")
-		if len(lines) != 7 {
-			t.Errorf("Expected 7 lines of output, but got %d. Output:\n%s", len(lines), output)
+		if !strings.Contains(headerLine, "SNAP SIZE") {
+			t.Error("Header is missing the 'SNAP SIZE' column")
+		}
+
+		snapSizeCol := strings.Index(headerLine, "SNAP SIZE")
+
+		snap2Line := ""
+		for _, line := range lines {
+			if strings.HasPrefix(line, "2         ") {
+				snap2Line = line
+				break
+			}
+		}
+		if snap2Line == "" {
+			t.Fatal("Could not find line for snapshot 2 in output")
+		}
+
+		if len(snap2Line) < snapSizeCol+15 {
+			t.Fatalf("Line for snapshot 2 is too short to contain snap size: %s", snap2Line)
+		}
+		snapSizeVal := strings.TrimSpace(snap2Line[snapSizeCol : snapSizeCol+15])
+		if snapSizeVal == "0 Bytes" || snapSizeVal == "" {
+			t.Errorf("Expected a non-zero snap size for snapshot 2, but got '%s'", snapSizeVal)
 		}
 	})
 

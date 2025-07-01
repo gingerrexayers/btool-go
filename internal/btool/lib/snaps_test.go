@@ -12,7 +12,7 @@ import (
 
 // setupSnapsTest creates a temporary test directory with a .btool/snaps subdirectory.
 // It also provides a helper function to easily create snap files for testing.
-func setupSnapsTest(t *testing.T) (string, func(hash, timestamp, message string)) {
+func setupSnapsTest(t *testing.T) (string, func(id int64, hash, timestamp, message string)) {
 	testDir := t.TempDir()
 	snapsDir := GetSnapsDir(testDir)
 	err := os.MkdirAll(snapsDir, 0755)
@@ -21,8 +21,9 @@ func setupSnapsTest(t *testing.T) (string, func(hash, timestamp, message string)
 	}
 
 	// createSnapFile is a helper to reduce boilerplate in tests.
-	createSnapFile := func(hash, timestamp, message string) {
+	createSnapFile := func(id int64, hash, timestamp, message string) {
 		snapData := types.Snap{
+			ID:           id,
 			Timestamp:    timestamp,
 			Message:      message,
 			RootTreeHash: "dummyTreeHash",
@@ -42,13 +43,13 @@ func setupSnapsTest(t *testing.T) (string, func(hash, timestamp, message string)
 }
 
 func TestGetSortedSnaps(t *testing.T) {
-	t.Run("should correctly sort snaps and assign IDs", func(t *testing.T) {
+	t.Run("should correctly sort snaps by ID", func(t *testing.T) {
 		// Arrange
 		testDir, createSnapFile := setupSnapsTest(t)
-		// Create snaps out of chronological order.
-		createSnapFile("hash_2", "2023-01-02T12:00:00Z", "second snap")
-		createSnapFile("hash_3", "2023-01-03T12:00:00Z", "third snap")
-		createSnapFile("hash_1", "2023-01-01T12:00:00Z", "first snap")
+		// Create snaps with IDs out of order to test sorting.
+		createSnapFile(2, "hash_2", "2023-01-02T12:00:00Z", "second snap")
+		createSnapFile(3, "hash_3", "2023-01-03T12:00:00Z", "third snap")
+		createSnapFile(1, "hash_1", "2023-01-01T12:00:00Z", "first snap")
 
 		// Act
 		snaps, err := GetSortedSnaps(testDir)
@@ -60,7 +61,7 @@ func TestGetSortedSnaps(t *testing.T) {
 		if len(snaps) != 3 {
 			t.Fatalf("Expected 3 snaps, but got %d", len(snaps))
 		}
-		// Check that IDs are assigned correctly after sorting (1, 2, 3).
+		// Check that snaps are sorted by ID (1, 2, 3).
 		if snaps[0].ID != 1 || snaps[0].Hash != "hash_1" {
 			t.Errorf("Expected first snap to have ID 1 and hash 'hash_1', got ID %d and hash '%s'", snaps[0].ID, snaps[0].Hash)
 		}
@@ -94,7 +95,7 @@ func TestGetSortedSnaps(t *testing.T) {
 		snapsDir := GetSnapsDir(testDir)
 
 		// Create one valid snap.
-		createSnapFile("hash_valid", "2023-01-01T12:00:00Z", "valid snap")
+		createSnapFile(1, "hash_valid", "2023-01-01T12:00:00Z", "valid snap")
 
 		// Create a file with invalid JSON.
 		err := os.WriteFile(filepath.Join(snapsDir, "corrupted.json"), []byte("{ not valid json }"), 0644)
@@ -103,7 +104,7 @@ func TestGetSortedSnaps(t *testing.T) {
 		}
 
 		// Create a file with a bad timestamp.
-		createSnapFile("hash_bad_ts", "not-a-valid-timestamp", "bad timestamp")
+		createSnapFile(2, "hash_bad_ts", "not-a-valid-timestamp", "bad timestamp")
 
 		// Create a non-JSON file that should be ignored.
 		err = os.WriteFile(filepath.Join(snapsDir, "ignore_me.txt"), []byte("text file"), 0644)
@@ -134,7 +135,7 @@ func TestGetSortedSnaps(t *testing.T) {
 		// Arrange
 		testDir, createSnapFile := setupSnapsTest(t)
 		timestamp := "2025-06-28T10:00:00Z"
-		createSnapFile("abcdef123", timestamp, "test message")
+		createSnapFile(1, "abcdef123", timestamp, "test message")
 
 		expectedTime, _ := time.Parse(time.RFC3339, timestamp)
 

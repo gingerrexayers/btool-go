@@ -31,10 +31,12 @@ type Tree struct {
 }
 
 type Snap struct {
-	Timestamp    string `json:"timestamp"`
+	ID         int64     `json:"id"`
+	Timestamp  string    `json:"timestamp"`
 	RootTreeHash string `json:"rootTreeHash"`
 	Message      string `json:"message,omitempty"`
 	SourceSize   int64  `json:"sourceSize"`
+	SnapSize     int64  `json:"snapSize,omitempty"`
 }
 
 type PackIndexEntry struct {

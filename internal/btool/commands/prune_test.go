@@ -62,8 +62,9 @@ func TestPruneCommand(t *testing.T) {
 		}
 		initialObjectCount := getIndexObjectCount(t, testDir)
 
-		// Act: Prune everything older than snap 3.
-		pruneOpts := commands.PruneOptions{SnapIdentifier: "3"}
+		// Act: Prune everything older than the third snap (allSnaps[2]).
+		snapToPruneFrom := allSnaps[2]
+		pruneOpts := commands.PruneOptions{SnapIdentifier: strconv.FormatInt(snapToPruneFrom.ID, 10)}
 		err := commands.Prune(testDir, pruneOpts)
 		require.NoError(t, err)
 
@@ -81,14 +82,16 @@ func TestPruneCommand(t *testing.T) {
 		finalObjectCount := getIndexObjectCount(t, testDir)
 		assert.Less(t, finalObjectCount, initialObjectCount, "Object count should decrease after GC")
 
-		// Golden Test
+		// Golden Test: Restore the OLDEST remaining snapshot to verify GC didn't corrupt it.
+		// This is the critical test. Snap 3's objects might have been shared with pruned snaps 1 and 2,
+		// so we must ensure its content is still correct after GC.
 		restoreDir := t.TempDir()
 		err = commands.Restore(testDir, remainingSnaps[0].Hash[:12], restoreDir)
-		require.NoError(t, err, "should be able to restore first remaining snap")
+		require.NoError(t, err, "should be able to restore oldest remaining snap")
 
 		restoredContent, err := os.ReadFile(filepath.Join(restoreDir, "file.txt"))
 		require.NoError(t, err)
-		assert.Equal(t, "version 3", string(restoredContent))
+		assert.Equal(t, "version 3", string(restoredContent), "restored content of snap 3 should be correct")
 	})
 
 	t.Run("should prune snapshots older than the one specified by hash prefix", func(t *testing.T) {
@@ -110,13 +113,14 @@ func TestPruneCommand(t *testing.T) {
 		assert.Len(t, remainingSnaps, 2)
 		assert.Equal(t, snapToPruneFrom.Hash, remainingSnaps[0].Hash)
 
-		// Golden Test
+		// Golden Test: Restore the OLDEST remaining snapshot to verify GC didn't corrupt it.
 		restoreDir := t.TempDir()
+		// After pruning, snaps 3 and 4 are left. remainingSnaps[0] is original snap 3.
 		err = commands.Restore(testDir, remainingSnaps[0].Hash[:12], restoreDir)
 		require.NoError(t, err)
 		restoredContent, err := os.ReadFile(filepath.Join(restoreDir, "file.txt"))
 		require.NoError(t, err)
-		assert.Equal(t, "version 3", string(restoredContent))
+		assert.Equal(t, "version 3", string(restoredContent), "restored content of snap 3 should be correct")
 	})
 
 	t.Run("should do nothing if the oldest snapshot is specified", func(t *testing.T) {
@@ -124,11 +128,12 @@ func TestPruneCommand(t *testing.T) {
 		lib.ResetObjectStoreState()
 		lib.ResetIgnoreState()
 		testDir := t.TempDir()
-		setupSnapshots(t, testDir, 3)
+		allSnaps := setupSnapshots(t, testDir, 3)
 		initialObjectCount := getIndexObjectCount(t, testDir)
 
-		// Act: Prune from snap 1, which is the oldest. Nothing should be pruned.
-		pruneOpts := commands.PruneOptions{SnapIdentifier: "1"}
+		// Act: Prune from the oldest snap, which should do nothing.
+		oldestSnapID := allSnaps[0].ID
+		pruneOpts := commands.PruneOptions{SnapIdentifier: strconv.FormatInt(oldestSnapID, 10)}
 		err := commands.Prune(testDir, pruneOpts)
 		require.NoError(t, err)
 

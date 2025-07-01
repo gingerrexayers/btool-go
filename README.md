@@ -36,6 +36,18 @@ your-project/
     └── file2.txt
 ```
 
+### Internal Design: The ObjectStore
+
+At the heart of `btool`'s storage layer is the `ObjectStore`, an instance-based and thread-safe component responsible for managing all data objects (chunks, manifests, and trees). Previously a collection of global functions, the object store was refactored into an encapsulated `ObjectStore` struct to eliminate global state and prevent race conditions during concurrent operations.
+
+Key characteristics of the new design:
+
+-   **Encapsulation**: All object store state, including the in-memory index of pending objects and file locks, is managed within an `ObjectStore` instance. This prevents state from leaking and ensures that each command (`snap`, `restore`, `prune`) operates on an isolated, consistent view of the repository.
+-   **Thread Safety**: A mutex within the `ObjectStore` struct protects against data corruption when objects are written concurrently, a common scenario during the `snap` process.
+-   **Explicit Commits**: Objects are written to a temporary in-memory map and are only persisted to disk when the `Commit()` method is called. This atomic operation ensures that the on-disk index and packfiles are never left in an inconsistent state.
+
+This robust design was implemented to resolve a critical bug where snapshot restores would fail due to missing objects in the index. By centralizing state management, the new `ObjectStore` guarantees the integrity and reliability of the backup repository.
+
 ---
 
 ## Installation
@@ -91,13 +103,16 @@ If you prefer to build the binary yourself:
 
 Creates a new snapshot of the specified directory (or the current directory if none is provided).
 
+**Flags:**
+-   `-m, --message string`: A message to associate with the snap.
+
 **Usage:**
 ```sh
-# Create a snapshot of the current directory
-btool snap
+# Create a snap of the current directory with a message
+btool snap -m "Initial backup of my project"
 
-# Create a snapshot of a specific project
-btool snap /path/to/my/project
+# Create a snap of a different directory
+btool snap /path/to/my/other/project -m "Backup of other project"
 ```
 
 ### `btool list [directory]`
@@ -112,13 +127,13 @@ btool list
 **Example Output:**
 ```
 Snaps for "/Users/mark/work/btool-go":
-SNAPSHOT   HASH       TIMESTAMP                  SOURCE SIZE     MESSAGE
-========   ========   ========================   =============   =======
-1          f4a9b1c    2023-10-27 10:30:05 UTC    1.25 MB         Initial commit
-2          9e1d3a8    2023-10-28 15:12:45 UTC    1.28 MB         Added new feature
-3          c3b0a2f    2023-10-29 11:05:19 UTC    1.35 MB         Refactored core logic
+SNAPSHOT   HASH       TIMESTAMP                  SOURCE SIZE     SNAP SIZE       MESSAGE
+========   ========   ========================   =============   =============   =======
+1          f4a9b1c    2023-10-27 10:30:05 UTC    1.25 MB         1.10 MB         Initial commit
+2          9e1d3a8    2023-10-28 15:12:45 UTC    1.28 MB         1.12 MB         Added new feature
+3          c3b0a2f    2023-10-29 11:05:19 UTC    1.35 MB         1.18 MB         Refactored core logic
 
-Total stored size of all objects: 950.75 KB
+Total stored size of all objects: 1.18 MB
 ```
 
 ### `btool restore <snap_id_or_hash>`
@@ -143,25 +158,129 @@ btool restore 1
 
 ### `btool prune <snap-identifier> [directory]`
 
-Removes snapshots older than the one specified and deletes unreferenced data objects to free up storage space. The snapshot identifier can be a numeric ID (e.g., `3`) or a unique hash prefix (e.g., `c3b0a2f`).
+Safely removes old snapshots and performs garbage collection to free up storage space.
+
+The `prune` command keeps the snapshot specified by `<snap-identifier>` and **all snapshots created after it**. Any snapshots created *before* the specified one will be permanently deleted. After removing the old snapshot records, it scans the repository for data chunks that are no longer referenced by any of the remaining snapshots and deletes them.
+
+The snapshot identifier can be a numeric ID (from `btool list`) or a unique hash prefix.
 
 **Arguments:**
--   `<snap-identifier>`: (Required) The ID or hash prefix of the oldest snapshot to keep. All snapshots created *before* this one will be removed.
+-   `<snap-identifier>`: (Required) The ID or hash prefix of the oldest snapshot **to keep**.
 -   `[directory]`: (Optional) The path to the project directory. Defaults to the current directory.
 
-**Usage:**
+**Example:**
+
+Imagine your snapshot list looks like this:
+```
+$ btool list
+SNAPSHOT   HASH       TIMESTAMP                  SOURCE SIZE     SNAP SIZE       MESSAGE
+========   ========   ========================   =============   =============   =======
+1          f4a9b1c    2023-10-27 10:30:05 UTC    1.25 MB         1.10 MB         Initial commit
+2          9e1d3a8    2023-10-28 15:12:45 UTC    1.28 MB         1.12 MB         Added new feature
+3          c3b0a2f    2023-10-29 11:05:19 UTC    1.35 MB         1.18 MB         Refactored core logic
+4          a1b2c3d    2023-10-30 18:00:00 UTC    1.40 MB         1.25 MB         Final touches
+```
+
+If you run `btool prune 3`, snapshot `3` and `4` will be kept, while `1` and `2` will be removed.
+
 ```sh
-# Prune all snapshots older than snapshot with ID 3
-btool prune 3
+# Keep snapshot 3 and all newer ones, prune everything older.
+$ btool prune 3
+🧹 Starting prune for "/Users/mark/work/btool-go", removing snaps older than 3...
+   - Marking live objects from snapshots to keep...
+   - Sweeping old objects and rebuilding index...
+   - Finalizing changes...
+✅ Prune complete!
+   - Deleted 2 old snap(s).
+```
 
-# Prune all snapshots older than the one with the specified hash prefix
+After pruning, the list will only show the remaining snapshots:
+```
+$ btool list
+SNAPSHOT   HASH       TIMESTAMP                  SOURCE SIZE     SNAP SIZE       MESSAGE
+========   ========   ========================   =============   =============   =======
+3          c3b0a2f    2023-10-29 11:05:19 UTC    1.35 MB         1.18 MB         Refactored core logic
+4          a1b2c3d    2023-10-30 18:00:00 UTC    1.40 MB         1.25 MB         Final touches
+```
+
+You can also use a hash prefix:
+```sh
+# This would have the same effect as 'btool prune 3'
 btool prune c3b0a2f
+```
 
-# Prune snapshots in a different project directory
-btool prune 10 /path/to/my/project
+### Tab Completion
+
+`btool` supports generating shell completion scripts for Bash, Zsh, Fish, and PowerShell. This allows you to get suggestions for commands and arguments (like snapshot IDs) by pressing the `Tab` key.
+
+The following examples show how to load completions for your current session and how to make them permanent.
+
+**Bash:**
+
+To load completions for the current session, run:
+```sh
+source <(btool completion bash)
+```
+
+To load completions for all new sessions, run the appropriate command for your OS once:
+```sh
+# macOS (requires Homebrew and bash-completion)
+# If you don't have bash-completion, install it: brew install bash-completion
+btool completion bash > $(brew --prefix)/etc/bash_completion.d/btool
+
+# Linux
+sudo btool completion bash > /etc/bash_completion.d/btool
+```
+
+**Zsh:**
+
+If shell completion is not already enabled in your environment, you will need to enable it by running the following command once:
+```sh
+echo "autoload -U compinit; compinit" >> ~/.zshrc
+```
+
+To load completions for all new sessions, run this command once:
+```sh
+btool completion zsh > "${fpath[1]}/_btool"
+```
+You will need to start a new shell for this setup to take effect.
+
+**Fish:**
+
+To load completions for the current session, run:
+```sh
+btool completion fish | source
+```
+
+To load completions for all new sessions, run this command once:
+```sh
+btool completion fish > ~/.config/fish/completions/btool.fish
+```
+
+**PowerShell:**
+
+To load completions for the current session, run:
+```powershell
+btool completion powershell | Out-String | Invoke-Expression
+```
+
+To load completions for all new sessions, add the following line to your PowerShell profile:
+```powershell
+Invoke-Expression (& btool completion powershell | Out-String)
+```
+If you're not sure where your profile file is, you can find its path by running `echo $PROFILE`. If the file doesn't exist, you can create it.
+
+Once enabled, you can type a command and press `Tab` to see suggestions:
+```sh
+$ btool prune <TAB>
+1   f4a9b1c 2023-10-27 10:30:05 - Initial commit
+2   9e1d3a8 2023-10-28 15:12:45 - Added new feature
+3   c3b0a2f 2023-10-29 11:05:19 - Refactored core logic
+4   a1b2c3d 2023-10-30 18:00:00 - Final touches
 ```
 
 ---
+
 
 ## For Developers
 

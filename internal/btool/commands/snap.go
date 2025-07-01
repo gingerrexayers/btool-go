@@ -59,7 +59,7 @@ func findAllFiles(rootDir string) ([]string, error) {
 
 // processFilesConcurrently creates a worker pool of goroutines to process files in parallel.
 // It chunks, hashes, and writes all file data (chunks and manifests) to the object store.
-func processFilesConcurrently(baseDir string, files []string) (map[string]string, int64, error) {
+func processFilesConcurrently(store *lib.ObjectStore, files []string) (map[string]string, int64, error) {
 	numJobs := len(files)
 	jobs := make(chan string, numJobs)
 	results := make(chan fileProcessResult, numJobs)
@@ -83,7 +83,7 @@ func processFilesConcurrently(baseDir string, files []string) (map[string]string
 
 				// Write all data chunks to the pending object store.
 				for _, chunk := range chunks {
-					if _, err := lib.WriteObject(baseDir, chunk.Data); err != nil {
+					if _, err := store.WriteObject(chunk.Data); err != nil {
 						results <- fileProcessResult{FilePath: filePath, Err: err}
 						return // Use return to stop processing on this file
 					}
@@ -96,7 +96,7 @@ func processFilesConcurrently(baseDir string, files []string) (map[string]string
 				}
 				manifest := types.FileManifest{Chunks: chunkRefs, TotalSize: totalSize}
 				manifestJSON, _ := json.Marshal(manifest)
-				manifestHash, err := lib.WriteObject(baseDir, manifestJSON)
+				manifestHash, err := store.WriteObject(manifestJSON)
 				if err != nil {
 					results <- fileProcessResult{FilePath: filePath, Err: err}
 					continue
@@ -133,7 +133,7 @@ func processFilesConcurrently(baseDir string, files []string) (map[string]string
 
 // buildTree recursively traverses a directory path and constructs a Tree object,
 // saving it to the object store and returning its hash.
-func buildTree(baseDir, directoryPath string, fileHashes map[string]string) (string, error) {
+func buildTree(store *lib.ObjectStore, baseDir, directoryPath string, fileHashes map[string]string) (string, error) {
 	entries := []types.TreeEntry{}
 	dirEntries, err := os.ReadDir(directoryPath)
 	if err != nil {
@@ -152,7 +152,7 @@ func buildTree(baseDir, directoryPath string, fileHashes map[string]string) (str
 		}
 
 		if entry.IsDir() {
-			treeHash, err := buildTree(baseDir, fullPath, fileHashes)
+			treeHash, err := buildTree(store, baseDir, fullPath, fileHashes)
 			if err != nil {
 				return "", err
 			}
@@ -183,7 +183,7 @@ func buildTree(baseDir, directoryPath string, fileHashes map[string]string) (str
 
 	tree := types.Tree{Entries: entries}
 	treeJSON, _ := json.Marshal(tree)
-	treeHash, err := lib.WriteObject(baseDir, treeJSON)
+	treeHash, err := store.WriteObject(treeJSON)
 	if err != nil {
 		return "", err
 	}
@@ -203,10 +203,12 @@ func Snap(targetDirectory string, message string) error {
 	}
 
 	fmt.Printf("📷 Starting snap for \"%s\"...\n", absTargetPath)
-	lib.ResetObjectStoreState() // Ensure a clean state for this command run.
+
 	if _, err := lib.EnsureBtoolDirs(absTargetPath); err != nil {
 		return fmt.Errorf("failed to ensure .btool directories: %w", err)
 	}
+
+	store := lib.NewObjectStore(absTargetPath)
 
 	// 2. Find all files to be processed.
 	files, err := findAllFiles(absTargetPath)
@@ -217,24 +219,37 @@ func Snap(targetDirectory string, message string) error {
 	fmt.Printf("   - Found %d files to process...\n", len(files))
 
 	// 3. Process files concurrently to generate chunks and manifests.
-	fileHashes, totalSourceSize, err := processFilesConcurrently(absTargetPath, files)
+	fileHashes, totalSourceSize, err := processFilesConcurrently(store, files)
 	if err != nil {
 		return fmt.Errorf("error processing files: %w", err)
 	}
 	fmt.Println("   - Finished processing files.")
 
 	// 4. Build the directory tree structure.
-	rootTreeHash, err := buildTree(absTargetPath, absTargetPath, fileHashes)
+	rootTreeHash, err := buildTree(store, absTargetPath, absTargetPath, fileHashes)
 	if err != nil {
 		return fmt.Errorf("error building directory tree: %w", err)
 	}
 
-	// 5. Create and save the final Snap object.
+	// 5. Commit all pending objects to a new packfile.
+	snapSize, err := store.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to commit objects: %w", err)
+	}
+
+	// 6. Create and save the final Snap object now that we have the size.
+	nextID, err := lib.GetNextSnapID(absTargetPath)
+	if err != nil {
+		return fmt.Errorf("failed to get next snapshot ID: %w", err)
+	}
+
 	snap := types.Snap{
+		ID:           nextID,
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
 		RootTreeHash: rootTreeHash,
 		Message:      message,
 		SourceSize:   totalSourceSize,
+		SnapSize:     snapSize,
 	}
 	snapJSON, _ := json.MarshalIndent(snap, "", "  ")
 	snapHash := lib.GetHash(snapJSON)
@@ -243,9 +258,10 @@ func Snap(targetDirectory string, message string) error {
 		return fmt.Errorf("failed to write snap manifest: %w", err)
 	}
 
-	// 6. Commit all pending objects to a new packfile.
-	if err := lib.Commit(absTargetPath); err != nil {
-		return fmt.Errorf("failed to commit objects: %w", err)
+	// Increment the counter only after the snap is successfully written.
+	if err := lib.IncrementNextSnapID(absTargetPath); err != nil {
+		// This is not a fatal error for the snap itself, but should be reported.
+		fmt.Fprintf(os.Stderr, "Warning: failed to increment snapshot counter: %v\n", err)
 	}
 
 	fmt.Println("✅ Snap complete!")
