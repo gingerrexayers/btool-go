@@ -1,23 +1,24 @@
 package commands_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/gingerrexayers/btool-go/internal/btool/commands"
-	"encoding/json"
-
 	"github.com/gingerrexayers/btool-go/internal/btool/lib"
 	"github.com/gingerrexayers/btool-go/internal/btool/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupRestoreTest creates a test repository with a single snapshot.
 // It returns the path to the source repo.
 func setupRestoreTest(t *testing.T) (sourceDir string) {
+	t.Helper()
 	sourceDir = t.TempDir()
 
 	// Create a file structure to be backed up.
@@ -29,40 +30,30 @@ func setupRestoreTest(t *testing.T) (sourceDir string) {
 	}
 
 	err := os.WriteFile(filepath.Join(sourceDir, "fileA.txt"), []byte("restore me"), fileMode)
-	if err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
+	require.NoError(t, err, "Failed to write test file")
 
 	err = os.Mkdir(filepath.Join(sourceDir, "subdir"), 0755)
-	if err != nil {
-		t.Fatalf("Failed to create subdir: %v", err)
-	}
+	require.NoError(t, err, "Failed to create subdir")
+
 	err = os.WriteFile(filepath.Join(sourceDir, "subdir", "fileB.txt"), []byte("me too"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write nested test file: %v", err)
-	}
+	require.NoError(t, err, "Failed to write nested test file")
 
 	// Create the snapshot.
 	err = commands.Snap(sourceDir, "restore test snap")
-	if err != nil {
-		t.Fatalf("Setup failed: snap command failed: %v", err)
-	}
+	require.NoError(t, err, "Setup failed: snap command failed")
 
 	return sourceDir
 }
 
 // compareDirs checks if two directories have identical content, structure, and permissions.
 func compareDirs(t *testing.T, dir1, dir2 string) {
+	t.Helper()
 	err := filepath.WalkDir(dir1, func(path1 string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+		require.NoError(t, err)
 
 		// Get the corresponding path in the second directory.
 		relPath, err := filepath.Rel(dir1, path1)
-		if err != nil {
-			return err
-		}
+		require.NoError(t, err)
 
 		// The .btool directory is part of the source repo but is not restored.
 		// We must skip it during comparison.
@@ -73,41 +64,29 @@ func compareDirs(t *testing.T, dir1, dir2 string) {
 		path2 := filepath.Join(dir2, relPath)
 
 		info1, err := d.Info()
-		if err != nil {
-			return err
-		}
+		require.NoError(t, err)
 
 		info2, err := os.Stat(path2)
-		if err != nil {
-			t.Errorf("Path '%s' exists in original but not in restored dir", relPath)
-			return nil // Continue walking
-		}
+		require.NoError(t, err, "Path '%s' exists in original but not in restored dir", relPath)
 
-		if info1.IsDir() != info2.IsDir() {
-			t.Errorf("Path '%s' is a directory in one tree but a file in the other", relPath)
-		}
+		assert.Equal(t, info1.IsDir(), info2.IsDir(), "Path '%s' is a directory in one tree but a file in the other", relPath)
 
 		// Skip mode check on directories on Windows as it's not reliable.
-		if info1.Mode() != info2.Mode() && (!info1.IsDir() || runtime.GOOS != "windows") {
-			t.Errorf("Permission mismatch for '%s': original %v, restored %v", relPath, info1.Mode(), info2.Mode())
+		if !info1.IsDir() || runtime.GOOS != "windows" {
+			assert.Equal(t, info1.Mode(), info2.Mode(), "Permission mismatch for '%s': original %v, restored %v", relPath, info1.Mode(), info2.Mode())
 		}
 
 		if !info1.IsDir() {
 			content1, err1 := os.ReadFile(path1)
 			content2, err2 := os.ReadFile(path2)
-			if err1 != nil || err2 != nil {
-				t.Errorf("Could not read file contents for '%s'", relPath)
-			}
-			if string(content1) != string(content2) {
-				t.Errorf("Content mismatch for file '%s'", relPath)
-			}
+			require.NoError(t, err1, "Could not read file contents for '%s'", relPath)
+			require.NoError(t, err2, "Could not read file contents for '%s'", relPath)
+			assert.Equal(t, string(content1), string(content2), "Content mismatch for file '%s'", relPath)
 		}
 
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("Failed to walk directory for comparison: %v", err)
-	}
+	require.NoError(t, err, "Failed to walk directory for comparison")
 }
 
 func TestRestoreCommand(t *testing.T) {
@@ -121,9 +100,7 @@ func TestRestoreCommand(t *testing.T) {
 
 		// Act
 		err := commands.Restore(sourceDir, strconv.Itoa(snapID), outputDir)
-		if err != nil {
-			t.Fatalf("commands.Restore() returned an unexpected error: %v", err)
-		}
+		require.NoError(t, err, "commands.Restore() returned an unexpected error")
 
 		// Assert: The contents of the original sourceDir and the outputDir should be identical.
 		compareDirs(t, sourceDir, outputDir)
@@ -138,36 +115,28 @@ func TestRestoreCommand(t *testing.T) {
 
 		// Act
 		err := commands.Restore(sourceDir, strconv.Itoa(snapID), nonExistentOutputDir)
-		if err != nil {
-			t.Fatalf("commands.Restore() returned an unexpected error: %v", err)
-		}
+		require.NoError(t, err, "commands.Restore() returned an unexpected error")
 
 		// Assert
-		if _, err := os.Stat(nonExistentOutputDir); os.IsNotExist(err) {
-			t.Fatal("Output directory was not created")
-		}
+		assert.DirExists(t, nonExistentOutputDir, "Output directory was not created")
 		compareDirs(t, sourceDir, nonExistentOutputDir)
 	})
 
-	t.Run("should restore using a unique hash prefix", func(t *testing.T) {
+	t.Run("should fail if the output directory is a file", func(t *testing.T) {
 		lib.ResetObjectStoreState()
 		// Arrange
 		sourceDir := setupRestoreTest(t)
-		outputDir := t.TempDir()
-		snaps, err := lib.GetSortedSnaps(sourceDir)
-		if err != nil || len(snaps) == 0 {
-			t.Fatal("Failed to get snaps for hash prefix test")
-		}
-		hashPrefix := snaps[0].Hash[:7] // Use a 7-character prefix.
+		outputFile := filepath.Join(t.TempDir(), "output_is_a_file")
+		err := os.WriteFile(outputFile, []byte("I am a file"), 0644)
+		require.NoError(t, err, "Failed to create output file for testing")
+		snapID := 1
 
 		// Act
-		err = commands.Restore(sourceDir, hashPrefix, outputDir)
-		if err != nil {
-			t.Fatalf("commands.Restore() with hash prefix failed: %v", err)
-		}
+		err = commands.Restore(sourceDir, strconv.Itoa(snapID), outputFile)
 
 		// Assert
-		compareDirs(t, sourceDir, outputDir)
+		require.Error(t, err, "Expected an error when output path is a file, but got nil")
+		assert.Contains(t, err.Error(), "output path exists and is not a directory")
 	})
 
 	t.Run("should return an error for a non-existent snapshot ID", func(t *testing.T) {
@@ -175,16 +144,14 @@ func TestRestoreCommand(t *testing.T) {
 		// Arrange
 		sourceDir := setupRestoreTest(t)
 		outputDir := t.TempDir()
+		nonExistentSnapID := "999"
 
 		// Act
-		err := commands.Restore(sourceDir, "999", outputDir) // "999" is an unlikely snap ID.
+		err := commands.Restore(sourceDir, nonExistentSnapID, outputDir)
+
 		// Assert
-		if err == nil {
-			t.Fatal("Expected an error due to ambiguous snap identifier, but got nil")
-		}
-		if err == nil || !strings.Contains(err.Error(), "no snap found") {
-			t.Errorf("Expected error to mention 'no snap found', but got: %v", err)
-		}
+		require.Error(t, err, "Expected an error for a non-existent snapshot, but got nil")
+		assert.Contains(t, err.Error(), "no snap found")
 	})
 
 	t.Run("should delete extraneous files in the destination directory", func(t *testing.T) {
@@ -192,36 +159,28 @@ func TestRestoreCommand(t *testing.T) {
 		sourceDir := t.TempDir()
 		// Create a file and take a snapshot
 		fileToKeepPath := filepath.Join(sourceDir, "file_to_keep.txt")
-		if err := os.WriteFile(fileToKeepPath, []byte("i should exist"), 0644); err != nil {
-			t.Fatalf("failed to write file to keep: %v", err)
-		}
-		if err := commands.Snap(sourceDir, "snap with one file"); err != nil {
-			t.Fatalf("snap failed: %v", err)
-		}
+		err := os.WriteFile(fileToKeepPath, []byte("i should exist"), 0644)
+		require.NoError(t, err, "failed to write file to keep")
+
+		err = commands.Snap(sourceDir, "snap with one file")
+		require.NoError(t, err, "snap failed")
 
 		// Prepare the restore destination with an extra file
 		restoreDir := t.TempDir()
 		fileToDeletePath := filepath.Join(restoreDir, "file_to_delete.txt")
-		if err := os.WriteFile(fileToDeletePath, []byte("i should be deleted"), 0644); err != nil {
-			t.Fatalf("failed to write file to delete: %v", err)
-		}
+		err = os.WriteFile(fileToDeletePath, []byte("i should be deleted"), 0644)
+		require.NoError(t, err, "failed to write file to delete")
 
 		// Act
-		err := commands.Restore(sourceDir, "1", restoreDir)
-		if err != nil {
-			t.Fatalf("Restore command failed: %v", err)
-		}
+		err = commands.Restore(sourceDir, "1", restoreDir)
+		require.NoError(t, err, "Restore command failed")
 
 		// Assert
 		// The file from the snapshot should exist
-		if _, err := os.Stat(filepath.Join(restoreDir, "file_to_keep.txt")); os.IsNotExist(err) {
-			t.Error("File that should have been restored does not exist")
-		}
+		assert.FileExists(t, filepath.Join(restoreDir, "file_to_keep.txt"), "File that should have been restored does not exist")
 
 		// The extraneous file should have been deleted
-		if _, err := os.Stat(fileToDeletePath); !os.IsNotExist(err) {
-			t.Error("Extraneous file was not deleted from the restore directory")
-		}
+		assert.NoFileExists(t, fileToDeletePath, "Extraneous file was not deleted from the restore directory")
 	})
 
 	t.Run("should fail gracefully if an object is missing from the index", func(t *testing.T) {
@@ -232,74 +191,57 @@ func TestRestoreCommand(t *testing.T) {
 		// Find a chunk object hash to remove from the index.
 		store := lib.NewObjectStore(sourceDir)
 		snaps, err := lib.GetSortedSnaps(sourceDir)
-		if err != nil || len(snaps) == 0 {
-			t.Fatal("Failed to get snaps to find an object to delete")
-		}
+		require.NoError(t, err)
+		require.NotEmpty(t, snaps, "Failed to get snaps to find an object to delete")
+
 		rootTreeHash := snaps[0].RootTreeHash
 
 		var rootTree types.Tree
-		if err := store.ReadObjectAsJSON(rootTreeHash, &rootTree); err != nil {
-			t.Fatalf("Could not read root tree to find a file manifest: %v", err)
-		}
+		err = store.ReadObjectAsJSON(rootTreeHash, &rootTree)
+		require.NoError(t, err, "Could not read root tree to find a file manifest")
 
 		var fileManifestHash string
 		var found bool
 		for _, entry := range rootTree.Entries {
 			if entry.Name == "fileA.txt" {
-				if entry.Type != "blob" {
-					t.Fatalf("Expected 'fileA.txt' to be a blob, but got type '%s'", entry.Type)
-				}
+				require.Equal(t, "blob", entry.Type, "Expected 'fileA.txt' to be a blob")
 				fileManifestHash = entry.Hash
 				found = true
 				break
 			}
 		}
-
-		if !found {
-			t.Fatal("Could not find entry for 'fileA.txt' in the root tree")
-		}
+		require.True(t, found, "Could not find entry for 'fileA.txt' in the root tree")
 
 		var fileManifest types.FileManifest
-		if err := store.ReadObjectAsJSON(fileManifestHash, &fileManifest); err != nil {
-			t.Fatalf("Could not read file manifest to find a chunk to delete: %v", err)
-		}
-		if len(fileManifest.Chunks) == 0 {
-			t.Fatal("File manifest has no chunks to delete")
-		}
+		err = store.ReadObjectAsJSON(fileManifestHash, &fileManifest)
+		require.NoError(t, err, "Could not read file manifest to find a chunk to delete")
+		require.NotEmpty(t, fileManifest.Chunks, "File manifest has no chunks to delete")
+
 		objectToDelete := fileManifest.Chunks[0].Hash
 
 		// Now, corrupt the index by removing this object.
 		indexPath := lib.GetIndexPath(sourceDir)
 		indexContent, err := os.ReadFile(indexPath)
-		if err != nil {
-			t.Fatalf("Failed to read index file: %v", err)
-		}
+		require.NoError(t, err, "Failed to read index file")
 
 		var index types.PackIndex
-		if err := json.Unmarshal(indexContent, &index); err != nil {
-			t.Fatalf("Failed to unmarshal index for corruption: %v", err)
-		}
+		err = json.Unmarshal(indexContent, &index)
+		require.NoError(t, err, "Failed to unmarshal index for corruption")
 
 		delete(index, objectToDelete)
 
 		corruptedIndexJSON, err := json.MarshalIndent(index, "", "  ")
-		if err != nil {
-			t.Fatalf("Failed to marshal corrupted index: %v", err)
-		}
-		if err := os.WriteFile(indexPath, corruptedIndexJSON, 0644); err != nil {
-			t.Fatalf("Failed to write corrupted index: %v", err)
-		}
+		require.NoError(t, err, "Failed to marshal corrupted index")
+
+		err = os.WriteFile(indexPath, corruptedIndexJSON, 0644)
+		require.NoError(t, err, "Failed to write corrupted index")
 
 		// Act
 		// The Restore command will create its own ObjectStore, which will load the now-corrupted index.
 		err = commands.Restore(sourceDir, "1", outputDir)
 
 		// Assert
-		if err == nil {
-			t.Fatal("Expected restore to fail due to missing object, but it succeeded")
-		}
-		if !strings.Contains(err.Error(), "not found in index") {
-			t.Errorf("Expected error about missing object from index, but got: %v", err)
-		}
+		require.Error(t, err, "Expected restore to fail due to missing object, but it succeeded")
+		assert.Contains(t, err.Error(), "not found in index", "Expected error about missing object from index")
 	})
 }

@@ -12,46 +12,33 @@ import (
 	"github.com/gingerrexayers/btool-go/internal/btool/commands"
 	"github.com/gingerrexayers/btool-go/internal/btool/lib"
 	"github.com/gingerrexayers/btool-go/internal/btool/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupTestDir is a helper function to create a temporary directory structure for testing.
 // It returns the root path of the test directory. Using t.TempDir() ensures automatic cleanup.
 func setupTestDir(t *testing.T) string {
+	t.Helper()
 	// Reset global ignore state before each test run to ensure isolation.
 	lib.ResetIgnoreState()
 
 	testDir := t.TempDir()
 
 	// Create a nested structure
-	if err := os.Mkdir(filepath.Join(testDir, "subdir"), 0755); err != nil {
-		t.Fatalf("Failed to create subdir: %v", err)
-	}
+	require.NoError(t, os.Mkdir(filepath.Join(testDir, "subdir"), 0755), "Failed to create subdir")
 
 	// Create test files: two unique, two identical for de-duplication testing.
-	if err := os.WriteFile(filepath.Join(testDir, "fileA.txt"), []byte("unique content A"), 0644); err != nil {
-		t.Fatalf("Failed to write fileA.txt: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(testDir, "fileB.txt"), []byte("identical content"), 0644); err != nil {
-		t.Fatalf("Failed to write fileB.txt: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(testDir, "subdir", "fileC.txt"), []byte("identical content"), 0644); err != nil {
-		t.Fatalf("Failed to write subdir/fileC.txt: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(testDir, "fileA.txt"), []byte("unique content A"), 0644), "Failed to write fileA.txt")
+	require.NoError(t, os.WriteFile(filepath.Join(testDir, "fileB.txt"), []byte("identical content"), 0644), "Failed to write fileB.txt")
+	require.NoError(t, os.WriteFile(filepath.Join(testDir, "subdir", "fileC.txt"), []byte("identical content"), 0644), "Failed to write subdir/fileC.txt")
 
 	// Create an ignored file and the .btoolignore file to test the ignore logic.
 	ignoreContent := "# Ignore log files via glob\n*.log\n\n# Ignore a specific directory\nignored_dir/"
-	if err := os.WriteFile(filepath.Join(testDir, ".btoolignore"), []byte(ignoreContent), 0644); err != nil {
-		t.Fatalf("Failed to write .btoolignore: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(testDir, "app.log"), []byte("this log should be ignored"), 0644); err != nil {
-		t.Fatalf("Failed to write app.log: %v", err)
-	}
-	if err := os.Mkdir(filepath.Join(testDir, "ignored_dir"), 0755); err != nil {
-		t.Fatalf("Failed to create ignored_dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(testDir, "ignored_dir", "some_file.txt"), []byte("this should also be ignored"), 0644); err != nil {
-		t.Fatalf("Failed to write to ignored_dir: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(testDir, ".btoolignore"), []byte(ignoreContent), 0644), "Failed to write .btoolignore")
+	require.NoError(t, os.WriteFile(filepath.Join(testDir, "app.log"), []byte("this log should be ignored"), 0644), "Failed to write app.log")
+	require.NoError(t, os.Mkdir(filepath.Join(testDir, "ignored_dir"), 0755), "Failed to create ignored_dir")
+	require.NoError(t, os.WriteFile(filepath.Join(testDir, "ignored_dir", "some_file.txt"), []byte("this should also be ignored"), 0644), "Failed to write to ignored_dir")
 
 	return testDir
 }
@@ -63,111 +50,81 @@ func TestSnapCommand(t *testing.T) {
 
 	// 2. Act: Call the public Snap function from the 'commands' package.
 	err := commands.Snap(testDir, "My first integration test snap")
-	if err != nil {
-		t.Fatalf("commands.Snap() failed unexpectedly: %v", err)
-	}
+	require.NoError(t, err, "commands.Snap() failed unexpectedly")
 
 	// 3. Assert - Check the filesystem state after the command has run.
 	snapsDir := lib.GetSnapsDir(testDir)
 	packsDir := lib.GetPacksDir(testDir)
 
 	// Check if essential directories and files were created.
-	if _, err := os.Stat(snapsDir); os.IsNotExist(err) {
-		t.Fatal(".btool/snaps directory was not created")
-	}
-	if _, err := os.Stat(packsDir); os.IsNotExist(err) {
-		t.Fatal(".btool/packs directory was not created")
-	}
+	require.DirExists(t, snapsDir, ".btool/snaps directory was not created")
+	require.DirExists(t, packsDir, ".btool/packs directory was not created")
 
 	// There should be exactly one snapshot manifest.
 	snapFiles, err := os.ReadDir(snapsDir)
-	if err != nil {
-		t.Fatalf("Could not read snaps directory: %v", err)
-	}
-	if len(snapFiles) != 1 {
-		t.Fatalf("Expected 1 snapshot file, but found %d", len(snapFiles))
-	}
+	require.NoError(t, err, "Could not read snaps directory")
+	require.Len(t, snapFiles, 1, "Expected 1 snapshot file")
 
 	// There should be exactly one pack file containing all objects.
 	packFiles, err := os.ReadDir(packsDir)
-	if err != nil {
-		t.Fatalf("Could not read packs directory: %v", err)
-	}
-	if len(packFiles) != 1 {
-		t.Fatalf("Expected 1 pack file, but found %d", len(packFiles))
-	}
+	require.NoError(t, err, "Could not read packs directory")
+	require.Len(t, packFiles, 1, "Expected 1 pack file")
 
 	// 4. Assert - Deeply inspect the contents of the created snapshot.
 	snapFileName := snapFiles[0].Name()
 	snapContent, err := os.ReadFile(filepath.Join(snapsDir, snapFileName))
-	if err != nil {
-		t.Fatalf("Could not read snapshot file: %v", err)
-	}
+	require.NoError(t, err, "Could not read snapshot file")
 
 	var snapData types.Snap
-	if err := json.Unmarshal(snapContent, &snapData); err != nil {
-		t.Fatalf("Could not parse snapshot JSON: %v", err)
-	}
+	err = json.Unmarshal(snapContent, &snapData)
+	require.NoError(t, err, "Could not parse snapshot JSON")
 
 	// Verify snapshot metadata.
-	if snapData.Message != "My first integration test snap" {
-		t.Errorf("Expected snap message 'My first integration test snap', got '%s'", snapData.Message)
-	}
+	assert.Equal(t, "My first integration test snap", snapData.Message)
 	// Total size of "unique content A" (16) + "identical content" (17) * 2 = 50
 	expectedSize := int64(len("unique content A") + len("identical content")*2)
-	if snapData.SourceSize != expectedSize {
-		t.Errorf("Expected source size %d, got %d", expectedSize, snapData.SourceSize)
-	}
+	assert.Equal(t, expectedSize, snapData.SourceSize)
 
 	// Read and verify the root tree from the object store.
 	store := lib.NewObjectStore(testDir)
 	var rootTree types.Tree
-	if err := store.ReadObjectAsJSON(snapData.RootTreeHash, &rootTree); err != nil {
-		t.Fatalf("Could not read root tree object from store: %v", err)
-	}
+	err = store.ReadObjectAsJSON(snapData.RootTreeHash, &rootTree)
+	require.NoError(t, err, "Could not read root tree object from store")
 
 	// The root tree should contain 2 files and 1 directory. 'app.log' and 'ignored_dir' must NOT be present.
-	if len(rootTree.Entries) != 3 {
-		t.Fatalf("Expected root tree to have 3 entries (fileA, fileB, subdir), got %d", len(rootTree.Entries))
-	}
+	require.Len(t, rootTree.Entries, 3, "Expected root tree to have 3 entries (fileA, fileB, subdir)")
 
 	var fileA, fileB, subDirEntry types.TreeEntry
+	var foundA, foundB, foundSubDir bool
 	for _, entry := range rootTree.Entries {
 		switch entry.Name {
 		case "fileA.txt":
 			fileA = entry
+			foundA = true
 		case "fileB.txt":
 			fileB = entry
+			foundB = true
 		case "subdir":
 			subDirEntry = entry
+			foundSubDir = true
 		}
 	}
-	if fileA.Name == "" || fileB.Name == "" || subDirEntry.Name == "" {
-		t.Fatal("Root tree is missing one or more expected file/dir entries")
-	}
-	if subDirEntry.Type != "tree" {
-		t.Errorf("Expected 'subdir' entry to be of type 'tree', got '%s'", subDirEntry.Type)
-	}
+	require.True(t, foundA && foundB && foundSubDir, "Root tree is missing one or more expected file/dir entries")
+	assert.Equal(t, "tree", subDirEntry.Type, "Expected 'subdir' entry to be of type 'tree'")
 
 	// Read and verify the sub-tree for the 'subdir' directory.
 	var subTree types.Tree
-	if err := store.ReadObjectAsJSON(subDirEntry.Hash, &subTree); err != nil {
-		t.Fatalf("Could not read sub-tree object: %v", err)
-	}
-	if len(subTree.Entries) != 1 || subTree.Entries[0].Name != "fileC.txt" {
-		t.Fatalf("Sub-tree has incorrect entries, expected only 'fileC.txt'")
-	}
+	err = store.ReadObjectAsJSON(subDirEntry.Hash, &subTree)
+	require.NoError(t, err, "Could not read sub-tree object")
+	require.Len(t, subTree.Entries, 1, "Sub-tree should have exactly one entry")
+	assert.Equal(t, "fileC.txt", subTree.Entries[0].Name, "Sub-tree has incorrect entries")
 
 	// 5. Assert - De-duplication of content.
 	// The manifest hash for fileB ("identical content") must be the same as fileC ("identical content").
 	fileC := subTree.Entries[0]
-	if fileB.Hash != fileC.Hash {
-		t.Errorf("De-duplication failed: fileB hash (%s) does not match fileC hash (%s) for identical content", fileB.Hash, fileC.Hash)
-	}
+	assert.Equal(t, fileB.Hash, fileC.Hash, "De-duplication failed: hashes for identical content should match")
 	// And they must be different from fileA ("unique content A").
-	if fileA.Hash == fileB.Hash {
-		t.Error("fileA hash should not match fileB hash for different content")
-	}
+	assert.NotEqual(t, fileA.Hash, fileB.Hash, "Hashes for different content should not match")
 }
 
 func TestSnapCommand_EmptyDir(t *testing.T) {
@@ -176,44 +133,29 @@ func TestSnapCommand_EmptyDir(t *testing.T) {
 	testDir := t.TempDir()
 
 	// Act: Take a snapshot of the empty directory.
-	if err := commands.Snap(testDir, "empty dir snap"); err != nil {
-		t.Fatalf("Snap command failed for an empty directory: %v", err)
-	}
+	err := commands.Snap(testDir, "empty dir snap")
+	require.NoError(t, err, "Snap command failed for an empty directory")
 
 	// Assert: A snapshot was created.
 	snaps, err := lib.GetSortedSnaps(testDir)
-	if err != nil {
-		t.Fatalf("Failed to get snaps after snapshotting empty dir: %v", err)
-	}
-	if len(snaps) != 1 {
-		t.Fatalf("Expected 1 snapshot for empty dir, but found %d", len(snaps))
-	}
-	if snaps[0].Message != "empty dir snap" {
-		t.Errorf("Incorrect snap message: got '%s', want 'empty dir snap'", snaps[0].Message)
-	}
+	require.NoError(t, err, "Failed to get snaps after snapshotting empty dir")
+	require.Len(t, snaps, 1, "Expected 1 snapshot for empty dir")
+	assert.Equal(t, "empty dir snap", snaps[0].Message, "Incorrect snap message")
 
 	// Assert: The root tree is empty.
 	store := lib.NewObjectStore(testDir)
 	var rootTree types.Tree
-	if err := store.ReadObjectAsJSON(snaps[0].RootTreeHash, &rootTree); err != nil {
-		t.Fatalf("Failed to read root tree of empty snap: %v", err)
-	}
-	if len(rootTree.Entries) != 0 {
-		t.Errorf("Expected root tree to be empty, but it has %d entries", len(rootTree.Entries))
-	}
+	err = store.ReadObjectAsJSON(snaps[0].RootTreeHash, &rootTree)
+	require.NoError(t, err, "Failed to read root tree of empty snap")
+	assert.Empty(t, rootTree.Entries, "Expected root tree to be empty")
 
 	// Act: Restore the snapshot to a new directory.
 	outputDir := t.TempDir()
-	if err := commands.Restore(testDir, snaps[0].Hash, outputDir); err != nil {
-		t.Fatalf("Failed to restore empty snapshot: %v", err)
-	}
+	err = commands.Restore(testDir, snaps[0].Hash, outputDir)
+	require.NoError(t, err, "Failed to restore empty snapshot")
 
 	// Assert: The restored directory is empty.
 	files, err := os.ReadDir(outputDir)
-	if err != nil {
-		t.Fatalf("Could not read restored directory: %v", err)
-	}
-	if len(files) != 0 {
-		t.Errorf("Restored directory is not empty, contains %d files", len(files))
-	}
+	require.NoError(t, err, "Could not read restored directory")
+	assert.Empty(t, files, "Restored directory is not empty")
 }

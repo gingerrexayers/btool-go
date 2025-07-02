@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupIgnoreTest creates a temporary directory and writes a .btoolignore file
@@ -16,14 +19,11 @@ func setupIgnoreTest(t *testing.T, ignoreContent string) string {
 	// that the .btoolignore file is created where the function expects to find it.
 	tmpDir := t.TempDir()
 	canonicalTmpDir, err := filepath.EvalSymlinks(tmpDir)
-	if err != nil {
-		t.Fatalf("Failed to resolve symlinks for temp dir: %v", err)
-	}
+	require.NoError(t, err, "Failed to resolve symlinks for temp dir")
 
 	ignoreFilePath := filepath.Join(canonicalTmpDir, ".btoolignore")
-	if err := os.WriteFile(ignoreFilePath, []byte(ignoreContent), 0644); err != nil {
-		t.Fatalf("Failed to create .btoolignore file in canonical path: %v", err)
-	}
+	err = os.WriteFile(ignoreFilePath, []byte(ignoreContent), 0644)
+	require.NoError(t, err, "Failed to create .btoolignore file in canonical path")
 
 	ResetIgnoreState()
 	// Return the canonical path to be used by the test.
@@ -125,23 +125,19 @@ func TestIsPathIgnored(t *testing.T) {
 			fullPath := filepath.Join(testDir, filepath.FromSlash(tc.pathToCheck))
 
 			// Create the file/dir structure for the path we are testing against.
-			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-				t.Fatalf("Failed to create parent directory for test: %v", err)
-			}
+			err := os.MkdirAll(filepath.Dir(fullPath), 0755)
+			require.NoError(t, err, "Failed to create parent directory for test")
+
 			// This creates the final path component. If it's meant to be a directory,
 			// this creates a file with that name, which is sufficient for testing.
-			if err := os.WriteFile(fullPath, []byte("test"), 0644); err != nil {
-				t.Fatalf("Failed to create test file: %v", err)
-			}
+			err = os.WriteFile(fullPath, []byte("test"), 0644)
+			require.NoError(t, err, "Failed to create test file")
 
 			// Act
 			isIgnored := IsPathIgnored(testDir, fullPath)
 
 			// Assert
-			if isIgnored != tc.shouldBeIgnored {
-				t.Errorf("Path '%s' with ignore content:\n---\n%s\n---\nExpected ignored=%v, but got %v",
-					tc.pathToCheck, tc.ignoreContent, tc.shouldBeIgnored, isIgnored)
-			}
+			assert.Equal(t, tc.shouldBeIgnored, isIgnored, "Path '%s' with ignore content:\n---\n%s\n---", tc.pathToCheck, tc.ignoreContent)
 		})
 	}
 }
@@ -158,32 +154,26 @@ func TestIgnoreCaching(t *testing.T) {
 
 	// Create the file to be tested.
 	pathToTest := filepath.Join(testDir, "cache-test.txt")
-	if err := os.WriteFile(pathToTest, []byte("test"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
+	err := os.WriteFile(pathToTest, []byte("test"), 0644)
+	require.NoError(t, err, "Failed to create test file")
+
 	ignoreFilePath := filepath.Join(testDir, BtoolIgnoreFilename)
 
 	// Act (1st call) - This should load and cache the ignore rules.
 	isIgnoredFirstCall := IsPathIgnored(testDir, pathToTest)
 
 	// Assert (1st call)
-	if !isIgnoredFirstCall {
-		t.Fatal("First call failed: path that should be ignored was not.")
-	}
+	require.True(t, isIgnoredFirstCall, "First call failed: path that should be ignored was not.")
 
 	// Arrange for 2nd call: Delete the source of the rules.
-	err := os.Remove(ignoreFilePath)
-	if err != nil {
-		t.Fatalf("Failed to remove .btoolignore for caching test: %v", err)
-	}
+	err = os.Remove(ignoreFilePath)
+	require.NoError(t, err, "Failed to remove .btoolignore for caching test")
 
 	// Act (2nd call) - This should hit the cache and NOT re-read the (now deleted) file.
 	isIgnoredSecondCall := IsPathIgnored(testDir, pathToTest)
 
 	// Assert (2nd call)
-	if !isIgnoredSecondCall {
-		t.Error("Second call failed: path was not ignored, indicating cache was not used.")
-	}
+	assert.True(t, isIgnoredSecondCall, "Second call failed: path was not ignored, indicating cache was not used.")
 }
 
 func TestIgnoreConcurrency(t *testing.T) {
@@ -199,12 +189,10 @@ func TestIgnoreConcurrency(t *testing.T) {
 	// filepath.EvalSymlinks needs the files to exist to work correctly.
 	logFilePath := filepath.Join(testDir, "test.log")
 	txtFilePath := filepath.Join(testDir, "test.txt")
-	if err := os.WriteFile(logFilePath, []byte("log"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-	if err := os.WriteFile(txtFilePath, []byte("txt"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
+	err := os.WriteFile(logFilePath, []byte("log"), 0644)
+	require.NoError(t, err, "Failed to create test file")
+	err = os.WriteFile(txtFilePath, []byte("txt"), 0644)
+	require.NoError(t, err, "Failed to create test file")
 
 	// Act
 	numGoroutines := 100
@@ -215,12 +203,8 @@ func TestIgnoreConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Concurrently check both an ignored and a non-ignored file.
-			if !IsPathIgnored(testDir, logFilePath) {
-				t.Error("Concurrent check failed: .log file should have been ignored")
-			}
-			if IsPathIgnored(testDir, txtFilePath) {
-				t.Error("Concurrent check failed: .txt file should not have been ignored")
-			}
+			assert.True(t, IsPathIgnored(testDir, logFilePath), "Concurrent check failed: .log file should have been ignored")
+			assert.False(t, IsPathIgnored(testDir, txtFilePath), "Concurrent check failed: .txt file should not have been ignored")
 		}()
 	}
 

@@ -8,20 +8,22 @@ import (
 	"time"
 
 	"github.com/gingerrexayers/btool-go/internal/btool/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupSnapsTest creates a temporary test directory with a .btool/snaps subdirectory.
 // It also provides a helper function to easily create snap files for testing.
 func setupSnapsTest(t *testing.T) (string, func(id int64, hash, timestamp, message string)) {
+	t.Helper()
 	testDir := t.TempDir()
 	snapsDir := GetSnapsDir(testDir)
 	err := os.MkdirAll(snapsDir, 0755)
-	if err != nil {
-		t.Fatalf("Failed to create snaps test directory: %v", err)
-	}
+	require.NoError(t, err, "Failed to create snaps test directory")
 
 	// createSnapFile is a helper to reduce boilerplate in tests.
 	createSnapFile := func(id int64, hash, timestamp, message string) {
+		t.Helper()
 		snapData := types.Snap{
 			ID:           id,
 			Timestamp:    timestamp,
@@ -30,13 +32,10 @@ func setupSnapsTest(t *testing.T) (string, func(id int64, hash, timestamp, messa
 			SourceSize:   1024,
 		}
 		content, err := json.Marshal(snapData)
-		if err != nil {
-			t.Fatalf("Failed to marshal snap data: %v", err)
-		}
+		require.NoError(t, err, "Failed to marshal snap data")
+
 		err = os.WriteFile(filepath.Join(snapsDir, hash+".json"), content, 0644)
-		if err != nil {
-			t.Fatalf("Failed to write snap file %s.json: %v", hash, err)
-		}
+		require.NoError(t, err, "Failed to write snap file %s.json", hash)
 	}
 
 	return testDir, createSnapFile
@@ -53,24 +52,17 @@ func TestGetSortedSnaps(t *testing.T) {
 
 		// Act
 		snaps, err := GetSortedSnaps(testDir)
-		if err != nil {
-			t.Fatalf("GetSortedSnaps failed unexpectedly: %v", err)
-		}
+		require.NoError(t, err, "GetSortedSnaps failed unexpectedly")
 
 		// Assert
-		if len(snaps) != 3 {
-			t.Fatalf("Expected 3 snaps, but got %d", len(snaps))
-		}
+		require.Len(t, snaps, 3, "Expected 3 snaps")
 		// Check that snaps are sorted by ID (1, 2, 3).
-		if snaps[0].ID != 1 || snaps[0].Hash != "hash_1" {
-			t.Errorf("Expected first snap to have ID 1 and hash 'hash_1', got ID %d and hash '%s'", snaps[0].ID, snaps[0].Hash)
-		}
-		if snaps[1].ID != 2 || snaps[1].Hash != "hash_2" {
-			t.Errorf("Expected second snap to have ID 2 and hash 'hash_2', got ID %d and hash '%s'", snaps[1].ID, snaps[1].Hash)
-		}
-		if snaps[2].ID != 3 || snaps[2].Hash != "hash_3" {
-			t.Errorf("Expected third snap to have ID 3 and hash 'hash_3', got ID %d and hash '%s'", snaps[2].ID, snaps[2].Hash)
-		}
+		assert.Equal(t, int64(1), snaps[0].ID, "Expected first snap to have ID 1")
+		assert.Equal(t, "hash_1", snaps[0].Hash, "Expected first snap to have hash 'hash_1'")
+		assert.Equal(t, int64(2), snaps[1].ID, "Expected second snap to have ID 2")
+		assert.Equal(t, "hash_2", snaps[1].Hash, "Expected second snap to have hash 'hash_2'")
+		assert.Equal(t, int64(3), snaps[2].ID, "Expected third snap to have ID 3")
+		assert.Equal(t, "hash_3", snaps[2].Hash, "Expected third snap to have hash 'hash_3'")
 	})
 
 	t.Run("should return empty slice when snaps directory does not exist", func(t *testing.T) {
@@ -81,12 +73,8 @@ func TestGetSortedSnaps(t *testing.T) {
 		snaps, err := GetSortedSnaps(testDir)
 
 		// Assert
-		if err != nil {
-			t.Fatalf("Expected no error for missing snaps dir, but got: %v", err)
-		}
-		if len(snaps) != 0 {
-			t.Errorf("Expected 0 snaps for missing directory, but got %d", len(snaps))
-		}
+		require.NoError(t, err, "Expected no error for missing snaps dir")
+		assert.Empty(t, snaps, "Expected 0 snaps for missing directory")
 	})
 
 	t.Run("should skip corrupted and invalid files gracefully", func(t *testing.T) {
@@ -99,36 +87,24 @@ func TestGetSortedSnaps(t *testing.T) {
 
 		// Create a file with invalid JSON.
 		err := os.WriteFile(filepath.Join(snapsDir, "corrupted.json"), []byte("{ not valid json }"), 0644)
-		if err != nil {
-			t.Fatalf("Failed to write corrupted file: %v", err)
-		}
+		require.NoError(t, err, "Failed to write corrupted file")
 
 		// Create a file with a bad timestamp.
 		createSnapFile(2, "hash_bad_ts", "not-a-valid-timestamp", "bad timestamp")
 
 		// Create a non-JSON file that should be ignored.
 		err = os.WriteFile(filepath.Join(snapsDir, "ignore_me.txt"), []byte("text file"), 0644)
-		if err != nil {
-			t.Fatalf("Failed to write text file: %v", err)
-		}
+		require.NoError(t, err, "Failed to write text file")
 
 		// Act
 		snaps, err := GetSortedSnaps(testDir)
 
 		// Assert
-		if err != nil {
-			t.Fatalf("GetSortedSnaps failed unexpectedly: %v", err)
-		}
+		require.NoError(t, err, "GetSortedSnaps failed unexpectedly")
 		// It should have skipped the two bad .json files and the .txt file, leaving only the valid one.
-		if len(snaps) != 1 {
-			t.Fatalf("Expected 1 valid snap, but found %d", len(snaps))
-		}
-		if snaps[0].Hash != "hash_valid" {
-			t.Errorf("Expected the only found snap to be 'hash_valid', got '%s'", snaps[0].Hash)
-		}
-		if snaps[0].ID != 1 {
-			t.Errorf("Expected the valid snap to have ID 1, got %d", snaps[0].ID)
-		}
+		require.Len(t, snaps, 1, "Expected 1 valid snap")
+		assert.Equal(t, "hash_valid", snaps[0].Hash, "Expected the only found snap to be 'hash_valid'")
+		assert.Equal(t, int64(1), snaps[0].ID, "Expected the valid snap to have ID 1")
 	})
 
 	t.Run("should correctly parse all fields from a valid snap file", func(t *testing.T) {
@@ -137,36 +113,21 @@ func TestGetSortedSnaps(t *testing.T) {
 		timestamp := "2025-06-28T10:00:00Z"
 		createSnapFile(1, "abcdef123", timestamp, "test message")
 
-		expectedTime, _ := time.Parse(time.RFC3339, timestamp)
+		expectedTime, err := time.Parse(time.RFC3339, timestamp)
+		require.NoError(t, err)
 
 		// Act
 		snaps, err := GetSortedSnaps(testDir)
-		if err != nil {
-			t.Fatalf("GetSortedSnaps failed: %v", err)
-		}
-		if len(snaps) != 1 {
-			t.Fatalf("Expected 1 snap, got %d", len(snaps))
-		}
+		require.NoError(t, err, "GetSortedSnaps failed")
+		require.Len(t, snaps, 1, "Expected 1 snap")
 
 		// Assert
 		result := snaps[0]
-		if result.ID != 1 {
-			t.Errorf("ID mismatch: got %d, want 1", result.ID)
-		}
-		if result.Hash != "abcdef123" {
-			t.Errorf("Hash mismatch: got %s, want abcdef123", result.Hash)
-		}
-		if !result.Timestamp.Equal(expectedTime) {
-			t.Errorf("Timestamp mismatch: got %v, want %v", result.Timestamp, expectedTime)
-		}
-		if result.Message != "test message" {
-			t.Errorf("Message mismatch: got %s, want 'test message'", result.Message)
-		}
-		if result.RootTreeHash != "dummyTreeHash" {
-			t.Errorf("RootTreeHash mismatch: got %s, want 'dummyTreeHash'", result.RootTreeHash)
-		}
-		if result.SourceSize != 1024 {
-			t.Errorf("SourceSize mismatch: got %d, want 1024", result.SourceSize)
-		}
+		assert.Equal(t, int64(1), result.ID, "ID mismatch")
+		assert.Equal(t, "abcdef123", result.Hash, "Hash mismatch")
+		assert.True(t, result.Timestamp.Equal(expectedTime), "Timestamp mismatch")
+		assert.Equal(t, "test message", result.Message, "Message mismatch")
+		assert.Equal(t, "dummyTreeHash", result.RootTreeHash, "RootTreeHash mismatch")
+		assert.Equal(t, int64(1024), result.SourceSize, "SourceSize mismatch")
 	})
 }

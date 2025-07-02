@@ -115,8 +115,18 @@ func Restore(sourceDir, snapIdentifier, outputDir string) error {
 		return fmt.Errorf("failed to find snapshot %s to restore: %w", snapIdentifier, err)
 	}
 
+	// 2. Validate and prepare the output directory.
+	info, err := os.Stat(absOutputDir)
+	if err == nil { // Path exists
+		if !info.IsDir() {
+			return fmt.Errorf("output path exists and is not a directory: %s", absOutputDir)
+		}
+	} else if !os.IsNotExist(err) {
+		// An unexpected error occurred while stating the directory.
+		return fmt.Errorf("could not stat output directory: %w", err)
+	}
+
 	// Clean the output directory before restoring.
-	// This ensures the restored directory is an exact replica of the snapshot.
 	if err := os.RemoveAll(absOutputDir); err != nil {
 		return fmt.Errorf("failed to clean output directory: %w", err)
 	}
@@ -126,7 +136,7 @@ func Restore(sourceDir, snapIdentifier, outputDir string) error {
 
 	fmt.Printf("💧 Restoring snap %d (%s) to \"%s\"...\n", snapToRestore.ID, snapToRestore.Hash[:7], absOutputDir)
 
-	// 2. Set up the worker pool.
+	// 3. Set up the worker pool.
 	jobs := make(chan fileRestoreJob, 100) // Buffered channel
 	errs := make(chan error, 100)
 	var wg sync.WaitGroup
@@ -137,7 +147,7 @@ func Restore(sourceDir, snapIdentifier, outputDir string) error {
 		go restoreFileWorker(&wg, store, jobs, errs)
 	}
 
-	// 3. Start the recursive tree traversal.
+	// 4. Start the recursive tree traversal.
 	// This will populate the jobs channel.
 	err = restoreTree(store, snapToRestore.RootTreeHash, absOutputDir, jobs)
 	close(jobs) // Signal that no more jobs will be sent.
@@ -145,11 +155,11 @@ func Restore(sourceDir, snapIdentifier, outputDir string) error {
 		return fmt.Errorf("failed during tree traversal: %w", err)
 	}
 
-	// 4. Wait for all workers to finish.
+	// 5. Wait for all workers to finish.
 	wg.Wait()
 	close(errs) // Close the errors channel after workers are done.
 
-	// 5. Check if any worker reported an error.
+	// 6. Check if any worker reported an error.
 	for restoreErr := range errs {
 		if restoreErr != nil {
 			// Return the first error we encounter.

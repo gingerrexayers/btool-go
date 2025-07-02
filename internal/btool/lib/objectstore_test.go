@@ -1,7 +1,6 @@
 package lib
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"os"
@@ -9,16 +8,18 @@ import (
 	"testing"
 
 	"github.com/gingerrexayers/btool-go/internal/btool/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupObjectStoreTest sets up a temporary directory and creates a new ObjectStore instance.
 func setupObjectStoreTest(t *testing.T) (*ObjectStore, string) {
+	t.Helper()
 	testDir := t.TempDir()
 
 	// Ensure the .btool directory structure exists before running the test.
-	if _, err := EnsureBtoolDirs(testDir); err != nil {
-		t.Fatalf("Failed to create .btool directories: %v", err)
-	}
+	_, err := EnsureBtoolDirs(testDir)
+	require.NoError(t, err, "Failed to create .btool directories")
 
 	store := NewObjectStore(testDir)
 	return store, testDir
@@ -32,43 +33,29 @@ func TestObjectStore(t *testing.T) {
 
 		// Act: Write the object.
 		hash, err := store.WriteObject(content)
-		if err != nil {
-			t.Fatalf("WriteObject failed: %v", err)
-		}
-		if hash != expectedHash {
-			t.Errorf("WriteObject returned incorrect hash: got %s, want %s", hash, expectedHash)
-		}
+		require.NoError(t, err, "WriteObject failed")
+		assert.Equal(t, expectedHash, hash, "WriteObject returned incorrect hash")
 
 		// Act: Commit the pending changes.
 		_, err = store.Commit()
-		if err != nil {
-			t.Fatalf("Commit failed: %v", err)
-		}
+		require.NoError(t, err, "Commit failed")
 
 		// Act: Read the object back from the packfile.
 		readContent, err := store.ReadObjectAsBuffer(hash)
-		if err != nil {
-			t.Fatalf("ReadObjectAsBuffer failed: %v", err)
-		}
+		require.NoError(t, err, "ReadObjectAsBuffer failed")
 
 		// Assert
-		if !bytes.Equal(content, readContent) {
-			t.Error("Read content does not match original content")
-		}
+		assert.Equal(t, content, readContent, "Read content does not match original content")
 
 		// Assert that the index file was created and is valid
 		indexPath := GetIndexPath(testDir)
 		indexContent, err := os.ReadFile(indexPath)
-		if err != nil {
-			t.Fatalf("Could not read index file: %v", err)
-		}
+		require.NoError(t, err, "Could not read index file")
+
 		var index types.PackIndex
-		if err := json.Unmarshal(indexContent, &index); err != nil {
-			t.Fatalf("Could not parse index JSON: %v", err)
-		}
-		if _, ok := index[hash]; !ok {
-			t.Errorf("Expected hash %s to be in the index, but it was not", hash)
-		}
+		err = json.Unmarshal(indexContent, &index)
+		require.NoError(t, err, "Could not parse index JSON")
+		assert.Contains(t, index, hash, "Expected hash to be in the index")
 	})
 
 	t.Run("Read an object from the pending buffer before commit", func(t *testing.T) {
@@ -76,20 +63,14 @@ func TestObjectStore(t *testing.T) {
 		content := []byte("I am pending")
 
 		hash, err := store.WriteObject(content)
-		if err != nil {
-			t.Fatalf("WriteObject failed: %v", err)
-		}
+		require.NoError(t, err, "WriteObject failed")
 
 		// Act: Read the object back immediately, without committing.
 		readContent, err := store.ReadObjectAsBuffer(hash)
-		if err != nil {
-			t.Fatalf("ReadObjectAsBuffer failed for pending object: %v", err)
-		}
+		require.NoError(t, err, "ReadObjectAsBuffer failed for pending object")
 
 		// Assert
-		if !bytes.Equal(content, readContent) {
-			t.Error("Read content from pending buffer does not match original")
-		}
+		assert.Equal(t, content, readContent, "Read content from pending buffer does not match original")
 	})
 
 	t.Run("De-duplicate objects written to the pending buffer", func(t *testing.T) {
@@ -98,19 +79,14 @@ func TestObjectStore(t *testing.T) {
 
 		// Act
 		_, err := store.WriteObject(content)
-		if err != nil {
-			t.Fatalf("First WriteObject failed: %v", err)
-		}
+		require.NoError(t, err, "First WriteObject failed")
+
 		_, err = store.WriteObject(content) // Write the same content again
-		if err != nil {
-			t.Fatalf("Second WriteObject failed: %v", err)
-		}
+		require.NoError(t, err, "Second WriteObject failed")
 
 		// Assert that only one object is pending
 		pendingCount := store.PendingObjectCount()
-		if pendingCount != 1 {
-			t.Errorf("Expected 1 pending object after de-duplication, got %d", pendingCount)
-		}
+		assert.Equal(t, 1, pendingCount, "Expected 1 pending object after de-duplication")
 	})
 
 	t.Run("De-duplicate objects that are already committed", func(t *testing.T) {
@@ -118,20 +94,18 @@ func TestObjectStore(t *testing.T) {
 		content := []byte("already committed")
 
 		// Arrange: Write and commit the object.
-		_, _ = store.WriteObject(content)
-		_, _ = store.Commit()
+		_, err := store.WriteObject(content)
+		require.NoError(t, err)
+		_, err = store.Commit()
+		require.NoError(t, err)
 
 		// Act: Write the same object again.
-		_, err := store.WriteObject(content)
-		if err != nil {
-			t.Fatalf("WriteObject for committed object failed: %v", err)
-		}
+		_, err = store.WriteObject(content)
+		require.NoError(t, err, "WriteObject for committed object failed")
 
 		// Assert: There should now be zero pending objects.
 		pendingCount := store.PendingObjectCount()
-		if pendingCount != 0 {
-			t.Errorf("Expected 0 pending objects when writing an already committed object, got %d", pendingCount)
-		}
+		assert.Equal(t, 0, pendingCount, "Expected 0 pending objects when writing an already committed object")
 	})
 
 	t.Run("Return an error when reading a non-existent object", func(t *testing.T) {
@@ -139,9 +113,7 @@ func TestObjectStore(t *testing.T) {
 		nonExistentHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 		_, err := store.ReadObjectAsBuffer(nonExistentHash)
-		if err == nil {
-			t.Fatal("Expected an error when reading non-existent object, but got nil")
-		}
+		require.Error(t, err, "Expected an error when reading non-existent object, but got nil")
 	})
 
 	t.Run("Handle concurrent writes without race conditions", func(t *testing.T) {
@@ -156,12 +128,11 @@ func TestObjectStore(t *testing.T) {
 				defer wg.Done()
 				// Create unique content for each goroutine.
 				content := make([]byte, 100)
-				_, _ = rand.Read(content)
-				_, err := store.WriteObject(content)
-				if err != nil {
-					// t.Errorf is safe for concurrent use.
-					t.Errorf("Concurrent WriteObject failed: %v", err)
-				}
+				_, err := rand.Read(content)
+				require.NoError(t, err) // Use require inside goroutine for immediate failure feedback
+
+				_, err = store.WriteObject(content)
+				assert.NoError(t, err, "Concurrent WriteObject failed")
 			}(i)
 		}
 
@@ -169,25 +140,21 @@ func TestObjectStore(t *testing.T) {
 
 		// Assert
 		pendingCount := store.PendingObjectCount()
-
-		if pendingCount != numGoroutines {
-			t.Errorf("Expected %d pending objects after concurrent writes, but got %d", numGoroutines, pendingCount)
-		}
+		assert.Equal(t, numGoroutines, pendingCount, "Expected %d pending objects after concurrent writes", numGoroutines)
 
 		// Commit the results and verify.
 		_, err := store.Commit()
-		if err != nil {
-			t.Fatalf("Commit after concurrent writes failed: %v", err)
-		}
+		require.NoError(t, err, "Commit after concurrent writes failed")
 
 		// Check the index size after commit.
 		indexPath := GetIndexPath(testDir)
-		indexContent, _ := os.ReadFile(indexPath)
+		indexContent, err := os.ReadFile(indexPath)
+		require.NoError(t, err)
+
 		var index types.PackIndex
-		_ = json.Unmarshal(indexContent, &index)
-		if len(index) != numGoroutines {
-			t.Errorf("Expected index to have %d objects after commit, but got %d", numGoroutines, len(index))
-		}
+		err = json.Unmarshal(indexContent, &index)
+		require.NoError(t, err)
+		assert.Equal(t, numGoroutines, len(index), "Expected index to have %d objects after commit", numGoroutines)
 	})
 
 	t.Run("Read a JSON object correctly", func(t *testing.T) {
@@ -196,24 +163,21 @@ func TestObjectStore(t *testing.T) {
 			Chunks:    []types.ChunkRef{{Hash: GetHash([]byte("c1")), Size: 2}},
 			TotalSize: 2,
 		}
-		manifestJSON, _ := json.Marshal(manifest)
+		manifestJSON, err := json.Marshal(manifest)
+		require.NoError(t, err)
 
-		hash, _ := store.WriteObject(manifestJSON)
-		_, _ = store.Commit()
+		hash, err := store.WriteObject(manifestJSON)
+		require.NoError(t, err)
+		_, err = store.Commit()
+		require.NoError(t, err)
 
 		// Act
 		var readManifest types.FileManifest
-		err := store.ReadObjectAsJSON(hash, &readManifest)
-		if err != nil {
-			t.Fatalf("ReadObjectAsJSON failed: %v", err)
-		}
+		err = store.ReadObjectAsJSON(hash, &readManifest)
+		require.NoError(t, err, "ReadObjectAsJSON failed")
 
 		// Assert
-		if readManifest.TotalSize != manifest.TotalSize {
-			t.Errorf("Read JSON object has wrong TotalSize: got %d, want %d", readManifest.TotalSize, manifest.TotalSize)
-		}
-		if len(readManifest.Chunks) != 1 || readManifest.Chunks[0].Hash != manifest.Chunks[0].Hash {
-			t.Error("Read JSON object has incorrect chunk data")
-		}
+		assert.Equal(t, manifest.TotalSize, readManifest.TotalSize, "Read JSON object has wrong TotalSize")
+		assert.Equal(t, manifest.Chunks, readManifest.Chunks, "Read JSON object has incorrect chunk data")
 	})
 }

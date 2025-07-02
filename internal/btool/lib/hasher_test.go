@@ -4,9 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
-
-
 
 func TestHashing(t *testing.T) {
 	// Known SHA-256 hash for the string "hello world"
@@ -22,9 +23,7 @@ func TestHashing(t *testing.T) {
 		hash := GetHash(content)
 
 		// Assert
-		if hash != helloWorldHash {
-			t.Errorf("GetHash() for 'hello world' was incorrect, got: %s, want: %s", hash, helloWorldHash)
-		}
+		assert.Equal(t, helloWorldHash, hash, "GetHash() for 'hello world' was incorrect")
 	})
 
 	t.Run("GetHash for empty content", func(t *testing.T) {
@@ -35,9 +34,7 @@ func TestHashing(t *testing.T) {
 		hash := GetHash(content)
 
 		// Assert
-		if hash != emptyHash {
-			t.Errorf("GetHash() for empty content was incorrect, got: %s, want: %s", hash, emptyHash)
-		}
+		assert.Equal(t, emptyHash, hash, "GetHash() for empty content was incorrect")
 	})
 
 	t.Run("GetFileHash for file with content", func(t *testing.T) {
@@ -49,12 +46,8 @@ func TestHashing(t *testing.T) {
 		hash, err := GetFileHash(filePath)
 
 		// Assert
-		if err != nil {
-			t.Fatalf("GetFileHash() failed with an unexpected error: %v", err)
-		}
-		if hash != helloWorldHash {
-			t.Errorf("GetFileHash() for 'hello world' file was incorrect, got: %s, want: %s", hash, helloWorldHash)
-		}
+		require.NoError(t, err, "GetFileHash() failed with an unexpected error")
+		assert.Equal(t, helloWorldHash, hash, "GetFileHash() for 'hello world' file was incorrect")
 	})
 
 	t.Run("GetFileHash for empty file", func(t *testing.T) {
@@ -66,12 +59,8 @@ func TestHashing(t *testing.T) {
 		hash, err := GetFileHash(filePath)
 
 		// Assert
-		if err != nil {
-			t.Fatalf("GetFileHash() for empty file failed with an unexpected error: %v", err)
-		}
-		if hash != emptyHash {
-			t.Errorf("GetFileHash() for empty file was incorrect, got: %s, want: %s", hash, emptyHash)
-		}
+		require.NoError(t, err, "GetFileHash() for empty file failed with an unexpected error")
+		assert.Equal(t, emptyHash, hash, "GetFileHash() for empty file was incorrect")
 	})
 
 	t.Run("GetFileHash for non-existent file", func(t *testing.T) {
@@ -82,11 +71,7 @@ func TestHashing(t *testing.T) {
 		_, err := GetFileHash(nonExistentPath)
 
 		// Assert
-		if err == nil {
-			t.Fatal("Expected an error when hashing a non-existent file, but got nil")
-		}
-		if !os.IsNotExist(err) {
-			t.Errorf("Expected a 'file not exist' error, but got: %v", err)
-		}
+		require.Error(t, err, "Expected an error when hashing a non-existent file, but got nil")
+		assert.True(t, os.IsNotExist(err), "Expected a 'file not exist' error, but got: %v", err)
 	})
 }

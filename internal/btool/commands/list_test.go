@@ -10,16 +10,17 @@ import (
 	"time"
 
 	"github.com/gingerrexayers/btool-go/internal/btool/commands"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // captureStdout is a helper function to redirect os.Stdout to an in-memory
 // buffer, execute a function, and then return the captured output.
-func captureStdout(f func()) (string, error) {
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
 	oldStdout := os.Stdout
 	r, w, err := os.Pipe()
-	if err != nil {
-		return "", err
-	}
+	require.NoError(t, err)
 	os.Stdout = w
 
 	// This channel will signal when the output has been fully read.
@@ -38,7 +39,7 @@ func captureStdout(f func()) (string, error) {
 	os.Stdout = oldStdout
 
 	// Read the output from the channel and return.
-	return <-outC, nil
+	return <-outC
 }
 
 func TestListCommand(t *testing.T) {
@@ -48,88 +49,61 @@ func TestListCommand(t *testing.T) {
 		file1Path := filepath.Join(testDir, "file1.txt")
 
 		err := os.WriteFile(file1Path, []byte("version 1"), 0644)
-		if err != nil {
-			t.Fatalf("Setup failed: could not write file1: %v", err)
-		}
+		require.NoError(t, err, "Setup failed: could not write file1")
+
 		err = commands.Snap(testDir, "first commit")
-		if err != nil {
-			t.Fatalf("Setup failed: first snap command failed: %v", err)
-		}
+		require.NoError(t, err, "Setup failed: first snap command failed")
 
 		time.Sleep(10 * time.Millisecond)
 
 		// Modify the file to ensure the second snapshot has a non-zero snap size.
 		err = os.WriteFile(file1Path, []byte("version 2 is a bit longer"), 0644)
-		if err != nil {
-			t.Fatalf("Setup failed: could not modify file1: %v", err)
-		}
+		require.NoError(t, err, "Setup failed: could not modify file1")
+
 		err = commands.Snap(testDir, "second commit")
-		if err != nil {
-			t.Fatalf("Setup failed: second snap command failed: %v", err)
-		}
+		require.NoError(t, err, "Setup failed: second snap command failed")
 
 		// Act: Capture the output of the List command.
 		var listErr error
-		output, err := captureStdout(func() {
+		output := captureStdout(t, func() {
 			listErr = commands.List(testDir)
 		})
-		if err != nil {
-			t.Fatalf("Failed to capture stdout: %v", err)
-		}
+		require.NoError(t, listErr, "commands.List() returned an unexpected error")
 
 		// Assert
-		if listErr != nil {
-			t.Fatalf("commands.List() returned an unexpected error: %v", listErr)
-		}
-
 		// General output checks
-		if !strings.Contains(output, "Snaps for") {
-			t.Error("Output is missing the header line")
-		}
-		if !strings.Contains(output, "1         ") {
-			t.Error("Output is missing the entry for snapshot ID 1")
-		}
-		if !strings.Contains(output, "2         ") {
-			t.Error("Output is missing the entry for snapshot ID 2")
-		}
+		assert.Contains(t, output, "Snaps for", "Output is missing the header line")
+		assert.Contains(t, output, "1         ", "Output is missing the entry for snapshot ID 1")
+		assert.Contains(t, output, "2         ", "Output is missing the entry for snapshot ID 2")
 
 		// Specific checks for Snap Size column
 		lines := strings.Split(strings.TrimSpace(output), "\n")
-		headerLine := ""
+		var headerLine string
 		for _, line := range lines {
 			if strings.Contains(line, "SNAPSHOT") && strings.Contains(line, "HASH") {
 				headerLine = line
 				break
 			}
 		}
-		if headerLine == "" {
-			t.Fatal("Could not find header line in output")
-		}
-
-		if !strings.Contains(headerLine, "SNAP SIZE") {
-			t.Error("Header is missing the 'SNAP SIZE' column")
-		}
+		require.NotEmpty(t, headerLine, "Could not find header line in output")
+		assert.Contains(t, headerLine, "SNAP SIZE", "Header is missing the 'SNAP SIZE' column")
 
 		snapSizeCol := strings.Index(headerLine, "SNAP SIZE")
 
-		snap2Line := ""
+		var snap2Line string
 		for _, line := range lines {
 			if strings.HasPrefix(line, "2         ") {
 				snap2Line = line
 				break
 			}
 		}
-		if snap2Line == "" {
-			t.Fatal("Could not find line for snapshot 2 in output")
-		}
+		require.NotEmpty(t, snap2Line, "Could not find line for snapshot 2 in output")
 
-		if len(snap2Line) < snapSizeCol+15 {
-			t.Fatalf("Line for snapshot 2 is too short to contain snap size: %s", snap2Line)
-		}
+		require.GreaterOrEqual(t, len(snap2Line), snapSizeCol+15, "Line for snapshot 2 is too short to contain snap size: %s", snap2Line)
+
 		snapSizeVal := strings.TrimSpace(snap2Line[snapSizeCol : snapSizeCol+15])
-		if snapSizeVal == "0 Bytes" || snapSizeVal == "" {
-			t.Errorf("Expected a non-zero snap size for snapshot 2, but got '%s'", snapSizeVal)
-		}
+		assert.NotEqual(t, "0 Bytes", snapSizeVal, "Expected a non-zero snap size for snapshot 2")
+		assert.NotEmpty(t, snapSizeVal, "Expected a non-zero snap size for snapshot 2")
 	})
 
 	t.Run("should show a message when no snaps exist", func(t *testing.T) {
@@ -138,20 +112,13 @@ func TestListCommand(t *testing.T) {
 
 		// Act
 		var listErr error
-		output, err := captureStdout(func() {
+		output := captureStdout(t, func() {
 			listErr = commands.List(testDir)
 		})
-		if err != nil {
-			t.Fatalf("Failed to capture stdout: %v", err)
-		}
 
 		// Assert
-		if listErr != nil {
-			t.Fatalf("commands.List() returned an unexpected error: %v", listErr)
-		}
-		if !strings.Contains(output, "No snaps found") {
-			t.Errorf("Expected 'No snaps found' message, but got: %s", output)
-		}
+		require.NoError(t, listErr, "commands.List() returned an unexpected error")
+		assert.Contains(t, output, "No snaps found", "Expected 'No snaps found' message")
 	})
 
 	t.Run("should return an error for a non-existent directory", func(t *testing.T) {
@@ -162,11 +129,7 @@ func TestListCommand(t *testing.T) {
 		err := commands.List(nonExistentDir)
 
 		// Assert
-		if err == nil {
-			t.Fatal("Expected an error for a non-existent directory, but got nil")
-		}
-		if !strings.Contains(err.Error(), "target directory does not exist") {
-			t.Errorf("Expected error to mention 'target directory does not exist', but got: %v", err)
-		}
+		require.Error(t, err, "Expected an error for a non-existent directory, but got nil")
+		assert.Contains(t, err.Error(), "target directory does not exist")
 	})
 }

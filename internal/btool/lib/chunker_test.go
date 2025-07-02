@@ -1,11 +1,13 @@
 package lib
 
 import (
-	"bytes"
 	"crypto/rand"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupTestFile creates a temporary file with the given content.
@@ -16,9 +18,7 @@ func setupTestFile(t *testing.T, content []byte) (string, func()) {
 	filePath := filepath.Join(tempDir, "testfile.dat")
 
 	err := os.WriteFile(filePath, content, 0644)
-	if err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
+	require.NoError(t, err, "Failed to write test file")
 
 	cleanup := func() {
 		// os.RemoveAll(tempDir) is handled by t.TempDir(), so no extra cleanup is needed.
@@ -33,33 +33,23 @@ func TestChunkFile(t *testing.T) {
 		// avgChunkSize is 8KB, so 20KB should produce 2-3 chunks.
 		content := make([]byte, 20*1024)
 		_, err := rand.Read(content) // Fill with random data
-		if err != nil {
-			t.Fatalf("Failed to generate random content: %v", err)
-		}
+		require.NoError(t, err, "Failed to generate random content")
 
 		filePath, cleanup := setupTestFile(t, content)
 		defer cleanup()
 
 		chunks, totalSize, err := ChunkFile(filePath)
 
-		if err != nil {
-			t.Fatalf("ChunkFile failed with an unexpected error: %v", err)
-		}
-		if len(chunks) <= 1 {
-			t.Errorf("Expected file to be split into multiple chunks, but got %d", len(chunks))
-		}
-		if totalSize != int64(len(content)) {
-			t.Errorf("Expected totalSize to be %d, but got %d", len(content), totalSize)
-		}
+		require.NoError(t, err, "ChunkFile failed with an unexpected error")
+		assert.Greater(t, len(chunks), 1, "Expected file to be split into multiple chunks")
+		assert.Equal(t, int64(len(content)), totalSize, "Total size should match content length")
 
 		// Verify that the concatenated chunks re-form the original content.
 		var reconstructedContent []byte
 		for _, chunk := range chunks {
 			reconstructedContent = append(reconstructedContent, chunk.Data...)
 		}
-		if !bytes.Equal(content, reconstructedContent) {
-			t.Error("Reconstructed content does not match original file content")
-		}
+		assert.Equal(t, content, reconstructedContent, "Reconstructed content should match original")
 	})
 
 	t.Run("Chunk a small file (less than min chunk size)", func(t *testing.T) {
@@ -70,19 +60,11 @@ func TestChunkFile(t *testing.T) {
 
 		chunks, totalSize, err := ChunkFile(filePath)
 
-		if err != nil {
-			t.Fatalf("ChunkFile failed with an unexpected error: %v", err)
-		}
+		require.NoError(t, err, "ChunkFile failed with an unexpected error")
 		// It should be treated as a single chunk.
-		if len(chunks) != 1 {
-			t.Errorf("Expected 1 chunk for a small file, but got %d", len(chunks))
-		}
-		if totalSize != int64(len(content)) {
-			t.Errorf("Expected totalSize to be %d, but got %d", len(content), totalSize)
-		}
-		if !bytes.Equal(content, chunks[0].Data) {
-			t.Error("Chunk content does not match original file content")
-		}
+		require.Len(t, chunks, 1, "Expected 1 chunk for a small file")
+		assert.Equal(t, int64(len(content)), totalSize, "Total size should match content length")
+		assert.Equal(t, content, chunks[0].Data, "Chunk content should match original file content")
 	})
 
 	t.Run("Chunk an empty file", func(t *testing.T) {
@@ -92,15 +74,9 @@ func TestChunkFile(t *testing.T) {
 
 		chunks, totalSize, err := ChunkFile(filePath)
 
-		if err != nil {
-			t.Fatalf("ChunkFile failed with an unexpected error: %v", err)
-		}
-		if len(chunks) != 0 {
-			t.Errorf("Expected 0 chunks for an empty file, but got %d", len(chunks))
-		}
-		if totalSize != 0 {
-			t.Errorf("Expected totalSize to be 0 for an empty file, but got %d", totalSize)
-		}
+		require.NoError(t, err, "ChunkFile failed with an unexpected error")
+		assert.Empty(t, chunks, "Expected 0 chunks for an empty file")
+		assert.Equal(t, int64(0), totalSize, "Expected totalSize to be 0 for an empty file")
 	})
 
 	t.Run("Attempt to chunk a non-existent file", func(t *testing.T) {
@@ -108,40 +84,28 @@ func TestChunkFile(t *testing.T) {
 
 		_, _, err := ChunkFile(nonExistentPath)
 
-		if err == nil {
-			t.Fatal("Expected an error when chunking a non-existent file, but got nil")
-		}
+		require.Error(t, err, "Expected an error when chunking a non-existent file")
 		// Check that the error is a file system "not exist" error.
-		if !os.IsNotExist(err) {
-			t.Errorf("Expected a 'file not exist' error, but got a different error: %v", err)
-		}
+		assert.True(t, os.IsNotExist(err), "Expected a 'file not exist' error")
 	})
 
 	t.Run("Verify chunk hashes and sizes are correct", func(t *testing.T) {
 		content := make([]byte, 10*1024)
 		_, err := rand.Read(content)
-		if err != nil {
-			t.Fatalf("Failed to generate random content: %v", err)
-		}
+		require.NoError(t, err, "Failed to generate random content")
 
 		filePath, cleanup := setupTestFile(t, content)
 		defer cleanup()
 
 		chunks, _, err := ChunkFile(filePath)
-		if err != nil {
-			t.Fatalf("ChunkFile failed: %v", err)
-		}
+		require.NoError(t, err, "ChunkFile failed")
 
 		for _, chunk := range chunks {
 			// Recalculate the hash of the chunk data to ensure it matches.
 			expectedHash := GetHash(chunk.Data)
-			if chunk.Hash != expectedHash {
-				t.Errorf("Chunk hash mismatch: expected %s, got %s", expectedHash, chunk.Hash)
-			}
+			assert.Equal(t, expectedHash, chunk.Hash, "Chunk hash mismatch")
 			// Verify that the stored size matches the actual data length.
-			if chunk.Size != int64(len(chunk.Data)) {
-				t.Errorf("Chunk size mismatch: expected %d, got %d", len(chunk.Data), chunk.Size)
-			}
+			assert.Equal(t, int64(len(chunk.Data)), chunk.Size, "Chunk size mismatch")
 		}
 	})
 }

@@ -18,16 +18,14 @@ func getIndexObjectCount(t *testing.T, baseDir string) int {
 	lib.ResetObjectStoreState() // Ensure we read from disk, not cache.
 	indexPath := lib.GetIndexPath(baseDir)
 	content, err := os.ReadFile(indexPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0
-		}
-		t.Fatalf("Failed to read index file: %v", err)
+	if os.IsNotExist(err) {
+		return 0
 	}
+	require.NoError(t, err, "Failed to read index file")
+
 	var index map[string]interface{}
-	if err := json.Unmarshal(content, &index); err != nil {
-		t.Fatalf("Failed to parse index json: %v", err)
-	}
+	err = json.Unmarshal(content, &index)
+	require.NoError(t, err, "Failed to parse index json")
 	return len(index)
 }
 

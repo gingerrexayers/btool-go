@@ -1,6 +1,6 @@
 module github.com/gingerrexayers/btool-go
 
-go 1.23.2
+go 1.23
 
 require (
 	github.com/aclements/go-rabin v0.0.0-20170911142644-d0b643ea1a4c
